@@ -1,0 +1,6 @@
+course_id,course_name,instructor_id,duration_hours,student_count
+CS101,Introduction to Python,INS001,3,50
+CS102,Data Structures,INS002,4,45
+MATH201,Calculus II,INS003,3,60
+MATH202,Linear Algebra,INS001,4,55
+ENG101,English Composition,INS004,3,40

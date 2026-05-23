@@ -1,0 +1,6 @@
+room_id,room_name,capacity,building,has_projector
+R001,Lab A,30,Science Hall,Yes
+R002,Lecture Hall 1,100,Main Building,Yes
+R003,Classroom 101,50,Main Building,Yes
+R004,Seminar Room,25,Science Hall,Yes
+R005,Computer Lab,40,Tech Building,Yes
