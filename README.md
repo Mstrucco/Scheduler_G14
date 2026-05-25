@@ -141,7 +141,7 @@ pytest tests/ -v
 The scheduler expects course data in Excel or CSV format with the following structure:
 
 **Courses** (`sample_courses.csv`):
-- `LLAVE Código-sec`: Unique course section identifier (e.g., ING12011)
+- `LLAVE Código- sec`: Unique course section identifier (e.g., ING12011)
 - `CODIGO`: Course code (e.g., ING1201)
 - `TITULO`: Course name (e.g., Álgebra Lineal)
 - `CUPOS`: Student capacity per section
@@ -174,8 +174,6 @@ The system uses immutable dataclasses for consistent OR-Tools indexing:
 - `Clases` (Lectures)
 - `Ayudantías` (Workshops/Recitations)
 - `Laboratorios o Talleres` (Laboratories)
-- `Seminario` (Seminars)
-- `Práctica` (Practice)
 
 ## Architecture
 
@@ -212,7 +210,12 @@ Implements immutable frozen dataclasses for OR-Tools CP-SAT constraint programmi
 
 #### Data Module (`src/data/`)
 Handles data loading and validation:
-- **loader.py**: Reads course data from CSV and Excel files
+- **loader.py**: Robust data ingestion engine for course sections
+  - `parse_availability_string()`: Parses day availability strings with leading-zero handling (e.g., "8:30-9:20" → "08:30-09:20")
+  - `load_course_sections()`: Reads Excel/CSV files and constructs CourseSection objects with validated time slots
+  - Blind Optimization pattern: Encrypted RUT professor identifiers passed as-is without decryption
+  - Defensive error handling with non-identifiable warnings
+  - Successfully loads 56+ course sections with complex availability constraints
 - **validator.py**: Validates data integrity, constraints, and feasibility
 
 #### Solver Module (`src/solver/`)
@@ -334,22 +337,14 @@ pip install -r requirements.txt
 streamlit run app.py --server.port 8502
 ```
 
-### Issue: Data validation errors
-**Solution**: Verify your data format matches the sample data structure with correct column names and data types
-
-### Issue: Solver timeout
-**Solution**: For large instances (500+ courses), the solver may take longer. Increase timeout or split into multiple problems
 
 ## Future Enhancements
 
-- [ ] Multi-objective optimization (minimize cost, maximize preferences, load balance)
+- [ ] Multi-objective optimization (Allow some restrictions to be bypassed)
 - [ ] Real-time conflict resolution and rescheduling
-- [ ] Advanced filtering and search in UI
-- [ ] Export to calendar formats ()
-- [ ] Automated email notifications to professors
-- [ ] Performance optimization for very large institutions (1000+ courses)
+- [ ] Export to calendar formats (Excell and csv)
 - [ ] Machine learning for prediction of scheduling conflicts
-- [ ] App for schedule visualization
+
 
 ## API Documentation
 
@@ -446,16 +441,6 @@ pytest tests/test_loader.py -v
 pytest --cov=src tests/
 ```
 
-## Performance Considerations
-
-- **Small institutions** (<100 courses): Solution time typically < 1 second
-- **Medium institutions** (100-500 courses): Solution time typically 1-10 seconds
-- **Large institutions** (500+ courses): May require 30+ seconds or solver optimization
-- **Tips for large problems**:
-  - Tighten time slot constraints
-  - Reduce special facility requirements
-  - Split scheduling into multiple departments
-  - Increase solver timeout parameter
 
 ## Contributing
 
@@ -467,16 +452,6 @@ To contribute to this project:
 4. Add tests for new functionality
 5. Submit a pull request
 
-## License
-
-[Specify your license here - e.g., MIT, GPL, Apache 2.0]
-
-## Support
-
-For issues or questions:
-- Check the troubleshooting section above
-- Review sample data format
-- Consult Google OR-Tools documentation: https://developers.google.com/optimization
 
 ## Changelog
 
@@ -495,16 +470,9 @@ For issues or questions:
 - **Development Team**: IAA Project Team (Grupo 14)
 - **Project**: University Course Scheduling with Constraint Programming
 
-## Acknowledgments
-
-- Google OR-Tools team for the CP-SAT constraint programming solver
-- Streamlit for the interactive web framework
-- Pandas for data manipulation
-- The Chilean academic community for domain knowledge
-
 ---
 
 **Status**: ⚠️ In Development (MVP Phase)  
-**Last Updated**: 2026-05-24  
+**Last Updated**: 2026-05-25  
 **Version**: 0.1.0  
 **Repository**: Mstrucco/Proyect_IAA_G14
