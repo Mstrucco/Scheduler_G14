@@ -344,13 +344,12 @@ streamlit run app.py --server.port 8502
 
 - [ ] Multi-objective optimization (minimize cost, maximize preferences, load balance)
 - [ ] Real-time conflict resolution and rescheduling
-- [ ] Integration with university management systems (SIGA, Canvas, etc.)
 - [ ] Advanced filtering and search in UI
-- [ ] Export to calendar formats (iCalendar, Google Calendar, Outlook)
+- [ ] Export to calendar formats ()
 - [ ] Automated email notifications to professors
 - [ ] Performance optimization for very large institutions (1000+ courses)
 - [ ] Machine learning for prediction of scheduling conflicts
-- [ ] Mobile app for schedule visualization
+- [ ] App for schedule visualization
 
 ## API Documentation
 
