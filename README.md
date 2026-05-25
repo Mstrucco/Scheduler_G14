@@ -47,8 +47,7 @@ scheduler-mvp/
 │   ├── models/                     # Legacy model files
 │   │   └── models.py
 │   ├── data/                       # Data loading and validation
-│   │   ├── loader.py               # CSV and Excel data loader
-│   │   └── validator.py            # Data validation logic
+│   │   └── loader.py               # CSV and Excel data loader
 │   ├── solver/                     # OR-Tools scheduling solver
 │   │   ├── __init__.py
 │   │   └── scheduler.py            # Core CP-SAT scheduling engine
@@ -140,22 +139,23 @@ pytest tests/ -v
 
 The scheduler expects course data in Excel or CSV format with the following structure:
 
-**Courses** (`sample_courses.csv`):
-- `LLAVE Código- sec`: Unique course section identifier (e.g., ING12011)
-- `CODIGO`: Course code (e.g., ING1201)
-- `TITULO`: Course name (e.g., Álgebra Lineal)
-- `CUPOS`: Student capacity per section
-- `SECCIONES`: Number of course sections
-- `Plan Común`: Curriculum/program code
-- `Clases`: Number of lectures per week
-- `Ayudantías`: Number of workshop/recitation sessions per week
-- `Laboratorios o Talleres`: Number of lab sessions per week
-- `Sala especial`: Special room requirements (if any)
-- `Requisitos`: Course prerequisites
-- `RUT PROFESOR 1`: ID of primary instructor
-- `RUT PROFESOR 2`: ID of secondary instructor (optional)
-- `RUT PROFESOR LABT`: ID of lab/workshop instructor (optional)
-- Day-time preferences: `LUNES`, `MARTES`, `MIERCOLES`, `JUEVES`, `VIERNES` with preferred time slots
+**Courses** (`sample_courses.csv` or `.xlsx`):
+- `LLAVE Código- sec`: Unique course section identifier (encrypted)
+- `CODIGO`: Course code (encrypted)
+- `TITULO`: Course name (encrypted)
+- `Plan Común`: Curriculum/program level (1-4)
+- `Clases`: Number of lectures per week (e.g., 8)
+- `Ayudantías`: Number of workshop/recitation sessions per week (e.g., 4)
+- `Laboratorios o Talleres`: Number of lab sessions per week (e.g., 0-4)
+- `Sala especial`: Special room requirements (e.g., "BIBLIOTECA COMP-01", "CIENCIAS LABORATORIO DE CIENCIAS BÁSICAS")
+- `2+1 o 3? (distribución horario de clases)`: Class distribution format (e.g., "2+1", "2+1-separadas", "3-juntas")
+- `RUT PROFESOR 1`: ID of primary instructor (encrypted token)
+- `RUT PROFESOR 2`: ID of secondary instructor (encrypted token, optional)
+- `RUT PROFESOR LABT`: ID of lab/workshop instructor (encrypted token, optional)
+- Day-time preferences: `LUNES`, `MARTES`, `MIERCOLES`, `JUEVES`, `VIERNES` with time ranges
+  - Format: "08:30-09:20, 10:30-11:20" (comma-separated time ranges per day)
+  - Leading zeros optional: "8:30" automatically normalized to "08:30"
+  - Maps to ACADEMIC_BLOCKS indices (0-12)
 
 #### Data Models
 
@@ -216,7 +216,6 @@ Handles data loading and validation:
   - Blind Optimization pattern: Encrypted RUT professor identifiers passed as-is without decryption
   - Defensive error handling with non-identifiable warnings
   - Successfully loads 56+ course sections with complex availability constraints
-- **validator.py**: Validates data integrity, constraints, and feasibility
 
 #### Solver Module (`src/solver/`)
 Core scheduling engine:
@@ -410,12 +409,42 @@ is_valid, reason = GlobalTimeConstraints.validate_slot_constraints(
 
 ### Data Loader
 
-```python
-from src.data.loader import DataLoader
+The data loader module provides robust ingestion of course section data with advanced time-slot parsing:
 
-loader = DataLoader()
-courses = loader.load_courses('data/sample_courses.csv')
+```python
+from src.data.loader import load_course_sections
+
+# Load courses from Excel or CSV file
+courses = load_course_sections('data/sample_courses.xlsx')
+
+# Each CourseSection contains:
+# - section_key: Unique identifier (encrypted in Blind Optimization pattern)
+# - course_code, title: Course information (encrypted)
+# - plan_comun_level: Curriculum level (1-4)
+# - required_clases, required_ayudantias, required_laboratorios: Session counts
+# - professor_1_rut, professor_2_rut, lab_professor_rut: Encrypted professor IDs (passed as-is)
+# - special_room: Required facility (e.g., "BIBLIOTECA COMP-01")
+# - class_distribution: Format string (e.g., "2+1", "2+1-separadas", "3-juntas")
+# - allowed_slots: Frozenset of TimeSlot objects representing professor availability
+
+for section in courses:
+    print(f"Section: {section.section_key}")
+    print(f"Requirements: {section.required_clases} classes, "
+          f"{section.required_ayudantias} workshops, "
+          f"{section.required_laboratorios} labs")
+    print(f"Available slots: {len(section.allowed_slots)}")
 ```
+
+**Data Privacy - Blind Optimization Pattern:**
+The loader implements a "Blind Optimization" design where encrypted identifiers (RUT tokens, course codes, titles) are treated as opaque structural keys. No decryption is performed—tokens are passed directly to the solver, ensuring strict data privacy against external LLM tracking.
+
+**Time-Slot Parsing Features:**
+- Handles leading-zero normalization (e.g., "8:30" → "08:30")
+- Parses day availability strings with time ranges (e.g., "10:30-12:20")
+- Maps times to ACADEMIC_BLOCKS using both start and end time matching
+- Supports day-of-week columns: LUNES, MARTES, MIERCOLES, JUEVES, VIERNES
+- Defensive error handling with non-identifiable logging
+- Successfully loads 56+ course sections from real sample data
 
 ### Scheduler
 
@@ -456,6 +485,23 @@ To contribute to this project:
 ## Changelog
 
 ### Version 0.1.0 (Current MVP)
+
+**Latest Updates (2026-05-25):**
+- ✅ **Data Ingestion Engine** (`src/data/loader.py`):
+  - Implemented robust time-slot string parsing with leading-zero handling
+  - `parse_availability_string()`: Converts day availability strings to block indices (e.g., "10:30-12:20" → blocks [2,3])
+  - `load_course_sections()`: Reads Excel/CSV files and constructs CourseSection objects with validated time slots
+  - Blind Optimization pattern: Encrypted RUT professor identifiers preserved as-is (no decryption)
+  - Defensive error handling with non-identifiable warnings
+  - Tested with 56 real course sections from sample data
+
+**Bug Fixes:**
+- Fixed time-slot matching to handle both start times (e.g., "08:30") and end times (e.g., "09:20")
+  - Previous behavior: Failed to match end times, resulting in 0 allowed slots per section
+  - Fixed behavior: Now correctly maps time ranges to consecutive block indices
+  - Result: All 56 sections now have 3-55 valid time slots depending on availability
+
+**Earlier Implementation (2026-05-24):**
 - Initial MVP release with core scheduling functionality
 - CP-SAT based constraint programming solver
 - Support for multiple session types (lectures, workshops, labs)
@@ -463,6 +509,9 @@ To contribute to this project:
 - Streamlit web interface foundation
 - Sample Chilean university course data
 - Comprehensive data models with immutable dataclasses
+  - DayOfWeek, SessionType, TimeBlock, TimeSlot, CourseSection
+  - GlobalTimeConstraints for institutional rules
+  - ACADEMIC_BLOCKS: 13-block daily matrix (08:30-21:20)
 - Unit test framework
 
 ## Authors
@@ -474,5 +523,5 @@ To contribute to this project:
 
 **Status**: ⚠️ In Development (MVP Phase)  
 **Last Updated**: 2026-05-25  
-**Version**: 0.1.0  
+**Version**: 0.1.0 (Data Loader Complete)  
 **Repository**: Mstrucco/Proyect_IAA_G14
