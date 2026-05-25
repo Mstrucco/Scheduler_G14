@@ -1,6 +1,2 @@
-course_id,course_name,instructor_id,duration_hours,student_count
-CS101,Introduction to Python,INS001,3,50
-CS102,Data Structures,INS002,4,45
-MATH201,Calculus II,INS003,3,60
-MATH202,Linear Algebra,INS001,4,55
-ENG101,English Composition,INS004,3,40
+﻿LLAVE Código- sec ;CODIGO ;TITULO ;CUPOS ;SECCIONES ;Plan Común ;Clases ;Ayudantías ;Laboratorios o Talleres ;Sala especial ;Requisitos ;RUT PROFESOR 1 ;RUT PROFESOR 2 ;RUT PROFESOR LABT ;2+1 o 3? (distribución horario de clases) ;LUNES ;MARTES ;MIERCOLES ;JUEVES ;VIERNES
+ING12011 ;ING1201 ;Álgebra Lineal ;65;1;2;4;2;1;NaN ;Bases para el Estudio de Ingeniería, Álgebra;1234567K ;NaN ;123456780;NaN ;NaN ;NaN ;NaN ;8:30-9:20,9:30-10:20 ;14:30-15:20,15:30-16:20,16:30-17:20,17:30-18:20
