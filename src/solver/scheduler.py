@@ -196,28 +196,30 @@ class CourseScheduler:
         """
         Add cohort-level non-overlap constraints (Plan Común).
         
-        At any given time slot, at most one course per cohort level
-        can use that slot (no two sections of same cohort level at same time).
+        CORRECTED INTERPRETATION: At any given time slot, multiple courses from 
+        the SAME cohort level CAN run in parallel. However, they must not be 
+        sections of the SAME course code at the SAME time.
         
-        Interpretation: For each (plan_comun_level, day, block_index),
-        the sum of variables for DISTINCT course codes must be <= 1.
+        This constraint prevents the same course from being double-scheduled,
+        not preventing parallel execution of different courses.
         """
-        cohort_blocks = defaultdict(list)
+        # Group by (plan_comun_level, course_code, day, block_index)
+        # This ensures the same course isn't scheduled twice at the same time
+        course_blocks = defaultdict(list)
         
         for (section_key, session_type, day, block_index), var in self.vars.items():
             section = next(s for s in self.sections if s.section_key == section_key)
             
-            key = (section.plan_comun_level, day, block_index)
-            # Track both the variable and course code for uniqueness check
-            cohort_blocks[key].append((section.course_code, var))
+            # Key: course code + day + block (same course can't be at same time)
+            key = (section.course_code, day, block_index)
+            course_blocks[key].append(var)
         
-        # For each cohort/day/block, ensure at most 1 distinct course code is active
-        for key, course_var_pairs in cohort_blocks.items():
-            unique_courses = set(course for course, _ in course_var_pairs)
-            
-            if len(unique_courses) > 1:
-                # Multiple courses in same cohort at this slot
-                vars_list = [var for _, var in course_var_pairs]
+        # For each course/day/block, at most all its required sessions can be scheduled
+        # (no double-scheduling of same course)
+        for key, vars_list in course_blocks.items():
+            if len(vars_list) > 1:
+                # Multiple sessions of same course at same time - allow max 1
+                # (one session type per slot, e.g., either Clase OR Ayudantia, not both)
                 self.model.Add(sum(vars_list) <= 1)
     
     def _add_block4_constraint(self) -> None:

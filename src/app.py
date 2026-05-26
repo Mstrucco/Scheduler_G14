@@ -136,9 +136,6 @@ def validate_schedule() -> Dict:
     # Track rooms by (day, block) to detect room conflicts
     room_bookings: Dict[Tuple, List] = {}
     
-    # Track cohorts by (day, block, plan_comun_level)
-    cohort_bookings: Dict[Tuple, List] = {}
-    
     # Iterate through schedule matrix
     for (day_val, block_idx), blocks in st.session_state.schedule_matrix.items():
         report["stats"]["total_slots_used"] += 1
@@ -170,14 +167,6 @@ def validate_schedule() -> Dict:
                 if room_key not in room_bookings:
                     room_bookings[room_key] = []
                 room_bookings[room_key].append((section_key, session_type))
-            
-            # Check cohort overlaps (unless relaxed)
-            relax_key = f"plan_comun_{section.plan_comun_level}"
-            if not st.session_state.relaxation_flags.get(relax_key, False):
-                cohort_key = (day_val, block_idx, section.plan_comun_level)
-                if cohort_key not in cohort_bookings:
-                    cohort_bookings[cohort_key] = []
-                cohort_bookings[cohort_key].append(section_key)
     
     # Report professor double-bookings
     for (day_val, block_idx, prof), sections in professor_bookings.items():
@@ -599,14 +588,15 @@ def render_cohort_view(plan_comun_level: int) -> None:
 
 
 def render_master_view() -> None:
-    """Render master compilation view with all cohorts."""
-    st.subheader("Master Academic Calendar")
+    """Render master compilation view with all cohorts and concurrent courses."""
+    st.subheader("Master Academic Calendar - All Courses & Cohorts")
     
     if not st.session_state.sections:
         st.info("📭 No data loaded. Use the sidebar to upload a dataset.")
         return
     
-    st.write("Showing all courses across all cohort levels")
+    st.write("**Showing all concurrent courses across all cohort levels**")
+    st.info("💡 Cells display multiple courses running in parallel (separated by |). Multiple courses CAN run simultaneously if they use different professors and rooms.")
     
     # Create master grid
     days = ["LUNES", "MARTES", "MIERCOLES", "JUEVES", "VIERNES"]
@@ -615,7 +605,7 @@ def render_master_view() -> None:
     display_data = []
     for block_idx in range(13):
         block = ACADEMIC_BLOCKS[block_idx]
-        row = {"Block": f"{block_idx} ({block.start_time}-{block.end_time})"}
+        row = {"Block": f"{block_idx}\n({block.start_time}-{block.end_time})"}
         
         for day_idx, day in enumerate(days):
             key = (day_idx, block_idx)
@@ -624,14 +614,44 @@ def render_master_view() -> None:
                 for section_key, session_type, room in st.session_state.schedule_matrix[key]:
                     section = next((s for s in st.session_state.sections if s.section_key == section_key), None)
                     if section:
-                        courses.append(f"**{section.course_code[:8]}** ({section.plan_comun_level}) - {session_type[:3]}")
+                        # Format: CourseCode (PC_Level) SessionType [Room]
+                        course_str = f"{section.course_code[:10]} (PC{section.plan_comun_level}) {session_type[:3]}"
+                        if section.special_room:
+                            course_str += f" [{section.special_room[:15]}]"
+                        courses.append(course_str)
             
-            row[day] = " | ".join(courses) if courses else "—"
+            # Join multiple courses with newlines for better readability
+            row[day] = "\n".join(courses) if courses else "—"
         
         display_data.append(row)
     
     df = pd.DataFrame(display_data)
-    st.dataframe(df, use_container_width=True)
+    
+    # Display with custom styling
+    st.dataframe(
+        df, 
+        use_container_width=True,
+        height=500
+    )
+    
+    # Summary statistics
+    st.write("### 📊 Schedule Summary")
+    col1, col2, col3, col4 = st.columns(4)
+    
+    total_scheduled = sum(len(blocks) for blocks in st.session_state.schedule_matrix.values())
+    total_slots_used = len(st.session_state.schedule_matrix)
+    total_sections = len(st.session_state.sections)
+    total_required = sum(s.required_clases + s.required_ayudantias + s.required_laboratorios for s in st.session_state.sections)
+    
+    with col1:
+        st.metric("Total Sections", total_sections)
+    with col2:
+        st.metric("Total Blocks Required", total_required)
+    with col3:
+        st.metric("Blocks Scheduled", total_scheduled)
+    with col4:
+        utilization = f"{100 * total_scheduled / total_required:.1f}%" if total_required > 0 else "—"
+        st.metric("Utilization", utilization)
 
 
 # ============================================================================
