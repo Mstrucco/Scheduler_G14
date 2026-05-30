@@ -169,9 +169,9 @@ The scheduler expects course data in Excel or CSV format with the following stru
 - `LLAVE Código- sec`: Unique course section identifier
 - `CODIGO`: Course code
 - `TITULO`: Course name
-- `Plan Común`: Curriculum/program level (1-4)
+- `Plan Común`: Semester (1-4)
 - `Clases`: Number of lectures per week (e.g., 8)
-- `Ayudantías`: Number of workshop/recitation sessions per week (e.g., 4)
+- `Ayudantías`: Number of ayudantias sessions per week (e.g., 4)
 - `Laboratorios o Talleres`: Number of lab sessions per week (e.g., 0-4)
 - `Sala especial`: Special room requirements (e.g., "BIBLIOTECA COMP-01", "CIENCIAS LABORATORIO DE CIENCIAS BÁSICAS")
 - `2+1 o 3? (distribución horario de clases)`: Class distribution format (e.g., "2+1", "2+1-separadas", "3-juntas")
@@ -663,5 +663,3 @@ python run_diagnostics.py
 - [ ] Drag-and-drop currently visual-only (needs backend state sync)
 - [ ] Master view export needs formatting optimization
 - [ ] Constraint relaxation needs solver re-integration
-- [ ] Performance profiling for 1000+ course datasets
-- [ ] Multi-language support (Spanish localization)
