@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: Arial, Helvetica, sans-serif; font-size: 12px; color: #1f2937; background: #f7f8fa; padding: 10px; }
+.dnd-header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px; }
+.dnd-header h3 { font-size: 16px; font-weight: 700; }
+.dnd-count { color: #4b5563; font-size: 12px; }
+.unassigned-bank { background: #fff8e6; border: 1px solid #e5b94f; border-radius: 8px; padding: 10px; margin-bottom: 14px; max-height: 220px; overflow-y: auto; transition: background 0.15s, border-color 0.15s; }
+.unassigned-bank.drag-over { background: #fff0c2; border-color: #b7791f; }
+.bank-title { display: flex; justify-content: space-between; font-size: 13px; font-weight: 700; margin-bottom: 8px; }
+.bank-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+.empty-bank { color: #6b7280; font-size: 12px; padding: 6px 0; }
+.schedule-wrap { overflow: auto; border: 1px solid #d5dae1; border-radius: 8px; background: white; }
+.schedule-grid { border-collapse: separate; border-spacing: 0; width: 100%; min-width: 880px; }
+.schedule-grid th, .schedule-grid td { border-right: 1px solid #e5e7eb; border-bottom: 1px solid #e5e7eb; vertical-align: top; }
+.schedule-grid th { position: sticky; top: 0; z-index: 20; background: #243447; color: white; padding: 10px; font-size: 12px; font-weight: 700; text-align: center; }
+.block-label { width: 95px; min-width: 95px; background: #eef1f5; color: #243447; text-align: center; font-weight: 700; padding: 10px 6px; }
+.block-time { margin-top: 4px; color: #4b5563; font-size: 11px; }
+.drop-zone { position: relative; min-width: 145px; min-height: 80px; background: #ffffff; transition: background 0.15s, box-shadow 0.15s; }
+.drop-zone:hover { background: #f5f9fc; }
+.drop-zone.drag-over { background: #e8f3f7; box-shadow: inset 0 0 0 2px #2f7d95; }
+.cell-stack { min-height: 76px; padding: 6px; }
+.course-card { position: relative; background: #ffffff; border: 1px solid #d9dee7; border-left: 5px solid #245c7a; border-radius: 8px; color: #172033; cursor: move; font-size: 12px; margin-bottom: 6px; padding: 7px 8px; text-align: left; user-select: none; box-shadow: 0 1px 3px rgba(31,41,55,.12); transition: box-shadow 0.15s; }
+.course-card.ayudantia { border-left-color: #a16207; }
+.course-card.laboratorio { border-left-color: #2f6b43; }
+.course-card:hover { box-shadow: 0 6px 16px rgba(31,41,55,.18); z-index: 100; }
+.course-card.dragging { opacity: 0.5; }
+.course-card-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 3px; }
+.course-code { font-weight: 700; overflow-wrap: anywhere; }
+.session-pill { flex: 0 0 auto; border-radius: 6px; background: #e7edf4; color: #243447; font-size: 10px; font-weight: 700; padding: 2px 5px; }
+.course-title { color: #374151; font-size: 11px; line-height: 1.25; overflow-wrap: anywhere; }
+.course-meta, .course-reason { color: #6b7280; font-size: 10px; margin-top: 4px; overflow-wrap: anywhere; }
+.course-tooltip { display: none; position: absolute; left: calc(100% + 8px); top: 0; width: 260px; background: #111827; border-radius: 8px; box-shadow: 0 12px 32px rgba(17,24,39,.28); color: #f9fafb; font-size: 12px; line-height: 1.35; padding: 10px; z-index: 5000; pointer-events: none; }
+.course-tooltip div + div { margin-top: 4px; }
+.course-tooltip strong { color: #c7d2fe; }
+.course-card:hover .course-tooltip { display: block; }
+</style>
+</head>
+<body>
+<div id="dnd-root"></div>
+<script>
+// ── Streamlit component protocol (inline, no external deps) ──────────────────
+var Streamlit = (function() {
+  var RENDER_EVENT = "streamlit:render";
+  var _listeners = {};
+
+  // Listen for messages from Streamlit parent
+  window.addEventListener("message", function(e) {
+    var data = e.data;
+    if (!data || typeof data !== "object") return;
+
+    // Streamlit 1.x sends type "streamlit:render"
+    if (data.type === RENDER_EVENT) {
+      var listeners = _listeners[RENDER_EVENT] || [];
+      for (var i = 0; i < listeners.length; i++) {
+        listeners[i]({ detail: { args: data.args || {} } });
+      }
+    }
+  });
+
+  return {
+    RENDER_EVENT: RENDER_EVENT,
+
+    events: {
+      addEventListener: function(eventType, callback) {
+        if (!_listeners[eventType]) _listeners[eventType] = [];
+        _listeners[eventType].push(callback);
+      }
+    },
+
+    setComponentReady: function() {
+      window.parent.postMessage({
+        isStreamlitMessage: true,
+        type: "streamlit:componentReady",
+        apiVersion: 1
+      }, "*");
+    },
+
+    setComponentValue: function(value) {
+      window.parent.postMessage({
+        isStreamlitMessage: true,
+        type: "streamlit:setComponentValue",
+        value: value,
+        dataType: "json"
+      }, "*");
+    },
+
+    setFrameHeight: function(height) {
+      window.parent.postMessage({
+        isStreamlitMessage: true,
+        type: "streamlit:setFrameHeight",
+        height: height !== undefined ? height : document.documentElement.scrollHeight
+      }, "*");
+    }
+  };
+})();
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function esc(str) {
+  return String(str == null ? "" : str)
+    .replace(/&/g,"&amp;").replace(/"/g,"&quot;")
+    .replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+function shortText(str, max) {
+  str = String(str == null ? "" : str);
+  return str.length <= max ? str : str.slice(0, max - 3) + "...";
+}
+function normSession(s) {
+  s = String(s == null ? "" : s).trim();
+  var map = {
+    "clase":"Clase","clases":"Clase",
+    "ayudantia":"Ayudantía","ayudantías":"Ayudantía","ayudantía":"Ayudantía","ayudantias":"Ayudantía",
+    "laboratorio":"Laboratorio","laboratorios":"Laboratorio","lab":"Laboratorio"
+  };
+  return map[s.toLowerCase()] || s;
+}
+function sessionCss(s) {
+  var n = normSession(s).toLowerCase();
+  if (n.indexOf("ayud") !== -1) return "ayudantia";
+  if (n.indexOf("lab") !== -1) return "laboratorio";
+  return "clase";
+}
+function sessionAbbr(s) {
+  var n = normSession(s).toLowerCase();
+  if (n.indexOf("ayud") !== -1) return "AYU";
+  if (n.indexOf("lab") !== -1) return "LAB";
+  return "CLA";
+}
+
+// ── State ────────────────────────────────────────────────────────────────────
+var STATE = { schedule_matrix:{}, unassigned_blocks:{}, sections:[], plan_comun_level:1, academic_blocks:{} };
+var dragPayload = null;
+
+function sectionForKey(key) {
+  for (var i = 0; i < STATE.sections.length; i++) {
+    if (STATE.sections[i].section_key === key) return STATE.sections[i];
+  }
+  return null;
+}
+function profForSession(section, sessionType) {
+  var n = normSession(sessionType).toLowerCase();
+  if (n.indexOf("ayud") !== -1) return section.professor_2_rut || section.professor_1_rut;
+  if (n.indexOf("lab") !== -1) return section.lab_professor_rut || section.professor_1_rut;
+  return section.professor_1_rut;
+}
+
+// ── Card renderer ─────────────────────────────────────────────────────────────
+function renderCard(section, sessionType, room, source, sourceDay, sourceBlock, itemIndex, reason) {
+  var css = sessionCss(sessionType);
+  var abbr = sessionAbbr(sessionType);
+  var prof = profForSession(section, sessionType);
+  var roomL = section.special_room || room || "Standard";
+  var tooltipLines = [
+    ["Course", section.course_code + " - " + section.title],
+    ["Section", section.section_key],
+    ["Session", normSession(sessionType)],
+    ["Plan Común", section.plan_comun_level],
+    ["Professor", prof],
+    ["Room", roomL]
+  ];
+  if (reason) tooltipLines.push(["Reason", reason]);
+  var tooltipHtml = "";
+  for (var i = 0; i < tooltipLines.length; i++) {
+    tooltipHtml += "<div><strong>" + esc(tooltipLines[i][0]) + ":</strong> " + esc(tooltipLines[i][1]) + "</div>";
+  }
+  var reasonHtml = reason ? '<div class="course-reason">' + esc(shortText(reason, 64)) + '</div>' : "";
+  var sd = (sourceDay !== null && sourceDay !== undefined) ? sourceDay : "";
+  var sb = (sourceBlock !== null && sourceBlock !== undefined) ? sourceBlock : "";
+  var si = (itemIndex !== null && itemIndex !== undefined) ? itemIndex : "";
+  return '<div class="course-card ' + css + '" draggable="true"'
+    + ' data-source="' + esc(source) + '"'
+    + ' data-section-key="' + esc(section.section_key) + '"'
+    + ' data-session-type="' + esc(normSession(sessionType)) + '"'
+    + ' data-source-day="' + sd + '"'
+    + ' data-source-block="' + sb + '"'
+    + ' data-item-index="' + si + '">'
+    + '<div class="course-card-top">'
+    + '<span class="course-code">' + esc(section.course_code) + '</span>'
+    + '<span class="session-pill">' + esc(abbr) + '</span>'
+    + '</div>'
+    + '<div class="course-title">' + esc(shortText(section.title, 42)) + '</div>'
+    + '<div class="course-meta">Sec ' + esc(shortText(section.section_key, 14)) + ' | Prof ' + esc(shortText(prof, 18)) + '</div>'
+    + reasonHtml
+    + '<div class="course-tooltip">' + tooltipHtml + '</div>'
+    + '</div>';
+}
+
+// ── Grid builder ──────────────────────────────────────────────────────────────
+function buildGrid() {
+  var pcl = STATE.plan_comun_level;
+  var days = ["LUNES","MARTES","MIERCOLES","JUEVES","VIERNES"];
+  var unassignedCards = [];
+  var keys = Object.keys(STATE.unassigned_blocks);
+  for (var ki = 0; ki < keys.length; ki++) {
+    var sectionKey = keys[ki];
+    var section = sectionForKey(sectionKey);
+    if (!section || section.plan_comun_level !== pcl) continue;
+    var items = STATE.unassigned_blocks[sectionKey];
+    for (var ii = 0; ii < items.length; ii++) {
+      var item = items[ii];
+      var sessionType = typeof item === "object" ? item.session_type : item[0];
+      var reason = typeof item === "object" ? (item.reason || item.details || "") : (item[1] || "");
+      unassignedCards.push(renderCard(section, sessionType, section.special_room || "Standard", "unassigned", null, null, ii, reason));
+    }
+  }
+  var bankContent = unassignedCards.length
+    ? '<div class="bank-grid">' + unassignedCards.join("") + '</div>'
+    : '<div class="empty-bank">No unassigned blocks for this level.</div>';
+
+  var blockCount = Object.keys(STATE.academic_blocks).length || 13;
+  var rows = "";
+  for (var blockIdx = 0; blockIdx < blockCount; blockIdx++) {
+    var block = STATE.academic_blocks[String(blockIdx)] || { start_time:"?", end_time:"?" };
+    var cells = '<td class="block-label"><div>' + blockIdx + '</div><div class="block-time">' + esc(block.start_time) + '-' + esc(block.end_time) + '</div></td>';
+    for (var dayIdx = 0; dayIdx < days.length; dayIdx++) {
+      var key = dayIdx + "," + blockIdx;
+      var cellBlocks = STATE.schedule_matrix[key] || [];
+      var cardHtml = "";
+      for (var ci = 0; ci < cellBlocks.length; ci++) {
+        var entry = cellBlocks[ci];
+        var sec = sectionForKey(entry[0]);
+        if (sec && sec.plan_comun_level === pcl) {
+          cardHtml += renderCard(sec, entry[1], entry[2], "scheduled", dayIdx, blockIdx, null, null);
+        }
+      }
+      cells += '<td class="drop-zone" data-day="' + dayIdx + '" data-block="' + blockIdx + '"><div class="cell-stack">' + cardHtml + '</div></td>';
+    }
+    rows += "<tr>" + cells + "</tr>";
+  }
+  var headers = "";
+  for (var di = 0; di < days.length; di++) headers += "<th>" + esc(days[di]) + "</th>";
+
+  return '<div class="dnd-header"><h3>Plan Común ' + pcl + '</h3><div class="dnd-count">' + unassignedCards.length + ' unassigned block(s)</div></div>'
+    + '<div class="unassigned-bank" id="unassigned-bank"><div class="bank-title"><span>Unassigned Blocks</span><span>' + unassignedCards.length + '</span></div>' + bankContent + '</div>'
+    + '<div class="schedule-wrap"><table class="schedule-grid"><thead><tr><th class="block-label">Block</th>' + headers + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+}
+
+// ── Drag and drop ─────────────────────────────────────────────────────────────
+function wireEvents() {
+  var root = document.getElementById("dnd-root");
+  root.addEventListener("dragstart", function(e) {
+    var card = e.target.closest(".course-card");
+    if (!card) return;
+    dragPayload = {
+      source: card.dataset.source,
+      section_key: card.dataset.sectionKey,
+      session_type: card.dataset.sessionType,
+      source_day: card.dataset.sourceDay || null,
+      source_block: card.dataset.sourceBlock || null,
+      item_index: card.dataset.itemIndex || null
+    };
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", JSON.stringify(dragPayload));
+    card.classList.add("dragging");
+  });
+  root.addEventListener("dragend", function(e) {
+    var card = e.target.closest(".course-card");
+    if (card) card.classList.remove("dragging");
+  });
+  root.addEventListener("dragover", function(e) {
+    var zone = e.target.closest(".drop-zone, .unassigned-bank");
+    if (zone) { e.preventDefault(); zone.classList.add("drag-over"); }
+  });
+  root.addEventListener("dragleave", function(e) {
+    var zone = e.target.closest(".drop-zone, .unassigned-bank");
+    if (zone) zone.classList.remove("drag-over");
+  });
+  root.addEventListener("drop", function(e) {
+    e.preventDefault();
+    var zone = e.target.closest(".drop-zone, .unassigned-bank");
+    if (zone) zone.classList.remove("drag-over");
+    if (!dragPayload) return;
+    var isBank = !!e.target.closest(".unassigned-bank");
+    if (isBank) {
+      if (dragPayload.source !== "scheduled") return;
+      Streamlit.setComponentValue(JSON.stringify(Object.assign({}, dragPayload, { action:"unassign_block", plan_comun:STATE.plan_comun_level })));
+      return;
+    }
+    var cell = e.target.closest(".drop-zone");
+    if (!cell) return;
+    var targetDay = parseInt(cell.dataset.day, 10);
+    var targetBlock = parseInt(cell.dataset.block, 10);
+    if (dragPayload.source === "scheduled"
+        && String(dragPayload.source_day) === String(targetDay)
+        && String(dragPayload.source_block) === String(targetBlock)) return;
+    Streamlit.setComponentValue(JSON.stringify(Object.assign({}, dragPayload, {
+      action: "move_block",
+      target_day: targetDay,
+      target_block: targetBlock,
+      plan_comun: STATE.plan_comun_level
+    })));
+  });
+}
+
+// ── Render ────────────────────────────────────────────────────────────────────
+function onRender(event) {
+  var args = event.detail.args;
+  if (event.detail.value !== null && event.detail.value !== undefined) {
+    Streamlit.setComponentValue(null);
+    return;
+  }
+  STATE.schedule_matrix   = args.schedule_matrix   || {};
+  STATE.unassigned_blocks = args.unassigned_blocks || {};
+  STATE.sections          = args.sections          || [];
+  STATE.plan_comun_level  = args.plan_comun_level  || 1;
+  STATE.academic_blocks   = args.academic_blocks   || {};
+  document.getElementById("dnd-root").innerHTML = buildGrid();
+  Streamlit.setFrameHeight();
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+wireEvents();
+Streamlit.events.addEventListener(Streamlit.RENDER_EVENT, onRender);
+Streamlit.setComponentReady();
+</script>
+</body>
+</html>

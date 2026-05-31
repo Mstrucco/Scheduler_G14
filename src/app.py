@@ -28,7 +28,41 @@ from src.models.models import (
     TimeSlot,
     GlobalTimeConstraints,
 )
+from src.components.dnd_grid import dnd_grid as dnd_grid_component
 
+def serialize_schedule_matrix() -> dict:
+    """Convierte las keys de tupla a string 'day,block' para JSON."""
+    return {
+        f"{day},{block}": list(blocks)
+        for (day, block), blocks in st.session_state.schedule_matrix.items()
+    }
+
+def serialize_sections() -> list:
+    """Convierte los objetos section a dicts para JSON."""
+    result = []
+    for s in st.session_state.sections:
+        result.append({
+            "section_key":        s.section_key,
+            "course_code":        s.course_code,
+            "title":              s.title,
+            "plan_comun_level":   s.plan_comun_level,
+            "professor_1_rut":    s.professor_1_rut,
+            "professor_2_rut":    getattr(s, "professor_2_rut", None),
+            "lab_professor_rut":  getattr(s, "lab_professor_rut", None),
+            "special_room":       getattr(s, "special_room", None),
+            "class_distribution": getattr(s, "class_distribution", None),
+            "required_clases":      s.required_clases,
+            "required_ayudantias":  s.required_ayudantias,
+            "required_laboratorios":s.required_laboratorios,
+        })
+    return result
+
+def serialize_academic_blocks() -> dict:
+    """Convierte ACADEMIC_BLOCKS a dict serializable."""
+    return {
+        str(k): {"start_time": v.start_time, "end_time": v.end_time}
+        for k, v in ACADEMIC_BLOCKS.items()
+    }
 
 # ============================================================================
 # SESSION STATE INITIALIZATION
@@ -1789,37 +1823,52 @@ def render_sidebar() -> None:
 # ============================================================================
 
 def render_cohort_view(plan_comun_level: int) -> None:
-    """Render drag-and-drop schedule for a specific cohort level."""
-    
-    
+    print("Rendering cohort")
     if not st.session_state.sections:
         st.info("No data loaded. Use the sidebar to upload a dataset.")
         return
-    
-    # Generate and render the drag-and-drop grid
-    html_content = generate_dnd_grid_html(plan_comun_level)
-    st.components.v1.html(html_content, height=1100, scrolling=True)
-    
-    # Summary statistics
+
+    result = dnd_grid_component(
+        schedule_matrix=serialize_schedule_matrix(),
+        unassigned_blocks=st.session_state.unassigned_blocks,
+        sections=serialize_sections(),
+        plan_comun_level=plan_comun_level,
+        academic_blocks=serialize_academic_blocks(),
+        key=f"dnd_grid_{plan_comun_level}",
+    )
+
+    if result is not None:
+        print("Received DND result:", result)
+        payload = json.loads(result) if isinstance(result, str) else result
+        print("Parsed payload:", payload)
+        nonce = payload.get("nonce")
+        print(f"Processing DND result for plan_comun_level {plan_comun_level}, nonce: {nonce}")
+        last_nonce_key = f"_last_dnd_nonce_{plan_comun_level}"
+        print(f"Last nonce in session state: {st.session_state.get(last_nonce_key)}")
+        if st.session_state.get(last_nonce_key) != payload:
+            st.session_state[last_nonce_key] = payload
+            success, message = apply_schedule_action(payload)
+            if success:
+                st.success(message)
+                st.rerun()
+            else:
+                st.error(message)
+
+    # Métricas
     col1, col2, col3 = st.columns(3)
-    
-    # Count sections for this cohort
     cohort_sections = [s for s in st.session_state.sections if s.plan_comun_level == plan_comun_level]
     total_blocks_required = sum(s.required_clases + s.required_ayudantias + s.required_laboratorios for s in cohort_sections)
-    
     section_lookup = get_section_lookup()
-    scheduled_count = 0
-    for blocks in st.session_state.schedule_matrix.values():
-        for section_key, _, _ in blocks:
-            section = section_lookup.get(section_key)
-            if section and section.plan_comun_level == plan_comun_level:
-                scheduled_count += 1
-    
-    with col1:
+    scheduled_count = sum(
+        1 for blocks in st.session_state.schedule_matrix.values()
+        for section_key, _, _ in blocks
+        if (s := section_lookup.get(section_key)) and s.plan_comun_level == plan_comun_level
+    )
+    with col1: 
         st.metric("Sections", len(cohort_sections))
-    with col2:
+    with col2: 
         st.metric("Blocks Required", total_blocks_required)
-    with col3:
+    with col3: 
         st.metric("Scheduled Blocks", scheduled_count)
 
 
