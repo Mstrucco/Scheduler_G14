@@ -1783,7 +1783,8 @@ def render_sidebar() -> None:
     if st.sidebar.button("Regenerate Automated Schedule", key="regen_btn"):
         if st.session_state.sections:
             with st.spinner("Re-optimizing schedule with selected relaxations..."):
-                scheduler = CourseScheduler(st.session_state.sections)
+                print("Regenerating schedule with relaxations:", st.session_state.relaxation_flags)
+                scheduler = CourseScheduler(st.session_state.sections, st.session_state.relaxation_flags)
                 scheduled_blocks, conflict_report = scheduler.solve(timeout_seconds=60)
                 
                 matrix = build_schedule_matrix_from_assignments(scheduled_blocks)

@@ -22,6 +22,8 @@ from ..models.models import (
     SessionType,
     TimeSlot,
     GlobalTimeConstraints,
+    DayOfWeek,
+    create_professor_available_slots,
     ACADEMIC_BLOCKS,
 )
 
@@ -36,7 +38,7 @@ class CourseScheduler:
     while maximizing scheduled courses and respecting all constraints.
     """
     
-    def __init__(self, sections: List[CourseSection]):
+    def __init__(self, sections: List[CourseSection], relaxation_flags: Optional[Dict[str, bool]] = None) -> None:
         """
         Initialize the scheduler with course sections.
         
@@ -47,6 +49,12 @@ class CourseScheduler:
         self.model = cp_model.CpModel()
         self.vars: Dict[Tuple, cp_model.IntVar] = {}
         self._solver_solution = {}
+        self._relaxation_flags = relaxation_flags or {
+            'plan_comun_1': False,
+            'plan_comun_2': False,
+            'plan_comun_3': False,
+            'plan_comun_4': False,
+        }
         
         # Build the model
         self._build_model()
@@ -99,14 +107,30 @@ class CourseScheduler:
                 if required_blocks == 0:
                     continue
                 
-                # Create variables for valid slots
-                for slot in section.allowed_slots:
-                    # Check if slot is globally invalid
-                    if GlobalTimeConstraints.is_slot_globally_invalid(slot, session_type_enum):
-                        continue
-                    
-                    var_key = (section_key, session_type_enum.value, slot.day.value, slot.block_index)
-                    self.vars[var_key] = self.model.NewBoolVar(f"slot_{var_key}")
+                # Relaxed Availability Case
+                if self._relaxation_flags[f"plan_comun_{section.plan_comun_level}"]:
+                    relaxed_availability = {
+                        DayOfWeek.LUNES: frozenset([0, 1, 2, 3, 4, 5, 6, 7, 8]),
+                        DayOfWeek.MARTES: frozenset([0, 1, 2, 3, 4, 5, 6, 7, 8]),
+                        DayOfWeek.MIERCOLES: frozenset([0, 1, 2, 3, 4, 5, 6, 7, 8]),
+                        DayOfWeek.JUEVES: frozenset([0, 1, 2, 3, 4, 5, 6, 7, 8]),
+                        DayOfWeek.VIERNES: frozenset([0, 1, 2, 3, 4, 5, 6, 7, 8]),
+                    }
+                    prof_availability = create_professor_available_slots(relaxed_availability)
+                    for slot in prof_availability:
+                        if GlobalTimeConstraints.is_slot_globally_invalid(slot, session_type_enum):
+                            continue
+                        var_key = (section_key, session_type_enum.value, slot.day.value, slot.block_index)
+                        self.vars[var_key] = self.model.NewBoolVar(f"slot_{var_key}")
+                else:
+                    # Create variables for valid slots
+                    for slot in section.allowed_slots:
+                        # Check if slot is globally invalid
+                        if GlobalTimeConstraints.is_slot_globally_invalid(slot, session_type_enum):
+                            continue
+                        
+                        var_key = (section_key, session_type_enum.value, slot.day.value, slot.block_index)
+                        self.vars[var_key] = self.model.NewBoolVar(f"slot_{var_key}")
     
     def _add_demand_constraints(self) -> None:
         """
