@@ -4,3 +4,4 @@ openpyxl
 ortools
 pytest
 python-dotenv
+cryptography

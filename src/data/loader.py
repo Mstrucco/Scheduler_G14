@@ -16,7 +16,9 @@ import logging
 from pathlib import Path
 from typing import Dict, Set, Optional, List
 import pandas as pd
+from numpy import isin
 import math
+from cryptography.fernet import Fernet
 
 from ..models.models import (
     ACADEMIC_BLOCKS,
@@ -222,6 +224,10 @@ def load_course_sections(file_path: str) -> List[CourseSection]:
         df = pd.read_csv(file_path)
     elif file_path.suffix.lower() in [".xlsx", ".xls"]:
         df = pd.read_excel(file_path)
+        try:
+            profs = pd.read_excel(file_path, sheet_name="PROFESORES")
+        except ValueError:
+            logger.warning("Sheet 'PROFESORES' not found in the Excel file.")
     else:
         raise ValueError(f"Unsupported file format: {file_path.suffix}")
     
@@ -251,6 +257,18 @@ def load_course_sections(file_path: str) -> List[CourseSection]:
         raise ValueError(f"Missing required columns: {missing_columns}")
     
     course_sections = []
+
+    if 'profs' in locals():
+        df = df.dropna(subset=["Plan Común"])
+
+        full = '10:30-11:20,11:30-12:20,12:30-13:20,13:30-14:20,14:30-15:20,15:30-16:20,16:30-17:20'
+        days = ['LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES']
+        prof_j = profs[profs['TIPO DE PROFESOR 1'] == 'JORNADA']
+        rut_prof_jornada = prof_j['RUT PROFESOR 1']
+
+        df.loc[df['RUT PROFESOR 1'].isin(rut_prof_jornada), days] = full
+        df['Plan Común'] = pd.to_numeric(df['Plan Común'], errors='coerce').fillna(0)
+        df = df[(df['Plan Común'] > 0) & (df['Plan Común'] < 5)]
     
     # Iterate through records with defensive error handling
     for idx, row in df.iterrows():
@@ -276,8 +294,8 @@ def load_course_sections(file_path: str) -> List[CourseSection]:
             try:
                 plan_comun_level = int(row["Plan Común"])
             except (ValueError, TypeError):
-                logger.warning(f"Row {idx} ({section_key}): Invalid Plan Común value, using 1")
-                plan_comun_level = 1
+                logger.warning(f"Row {idx} ({section_key}): Invalid Plan Común value, using 0")
+                plan_comun_level = 0
             
             try:
                 required_clases = int(row["Clases"])
@@ -300,14 +318,22 @@ def load_course_sections(file_path: str) -> List[CourseSection]:
                 row["2+1 o 3? (distribución horario de clases)"]
             )
             
+            fernet_key = b'Kqjq_0SxrRuZ-QvPv0xdVuASGis3tH5efZ-WHvMxbic='
+            cipher = Fernet(fernet_key)
             # Extract RUT identifiers (encrypted tokens, passed as-is)
             professor_1_rut = str(row["RUT PROFESOR 1"]).strip()
             if not professor_1_rut or professor_1_rut == "nan":
                 logger.warning(f"Row {idx} ({section_key}): Missing RUT PROFESOR 1")
                 professor_1_rut = "UNKNOWN_PROF_1"
+            else:
+                professor_1_rut = cipher.encrypt(professor_1_rut.encode()).decode()
             
             professor_2_rut = _extract_optional_field(row["RUT PROFESOR 2"])
+            if professor_2_rut:
+                professor_2_rut = cipher.encrypt(professor_2_rut.encode()).decode()
             lab_professor_rut = _extract_optional_field(row["RUT PROFESOR LABT"])
+            if lab_professor_rut:
+                lab_professor_rut = cipher.encrypt(lab_professor_rut.encode()).decode()
             
             # Parse availability for each day
             availability_dict = {}
@@ -352,7 +378,7 @@ def load_course_sections(file_path: str) -> List[CourseSection]:
             logger.warning(f"Row {idx}: Unexpected error during row processing - {e}")
             continue
     
-    return course_sections
+    return course_sections, fernet_key
 
 
 def _extract_optional_field(value) -> Optional[str]:
@@ -461,7 +487,7 @@ if __name__ == "__main__":
     print(f"  Created mock data file: {mock_file_path}")
     
     try:
-        sections = load_course_sections(str(mock_file_path))
+        sections, fernet_key = load_course_sections(str(mock_file_path))
         
         print(f"\n  ✓ Successfully loaded {len(sections)} course sections:")
         

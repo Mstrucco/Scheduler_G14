@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import json
 import html as html_utils
 from datetime import datetime
+from cryptography.fernet import Fernet
 
 # Local imports
 from src.data.loader import load_course_sections
@@ -40,15 +41,16 @@ def serialize_schedule_matrix() -> dict:
 def serialize_sections() -> list:
     """Convierte los objetos section a dicts para JSON."""
     result = []
+    cipher = Fernet(b'Kqjq_0SxrRuZ-QvPv0xdVuASGis3tH5efZ-WHvMxbic=')
     for s in st.session_state.sections:
         result.append({
             "section_key":        s.section_key,
             "course_code":        s.course_code,
             "title":              s.title,
             "plan_comun_level":   s.plan_comun_level,
-            "professor_1_rut":    s.professor_1_rut,
-            "professor_2_rut":    getattr(s, "professor_2_rut", None),
-            "lab_professor_rut":  getattr(s, "lab_professor_rut", None),
+            "professor_1_rut":    cipher.decrypt((str(s.professor_1_rut).encode())).decode() if s.professor_1_rut != None else None,
+            "professor_2_rut":    cipher.decrypt((str(s.professor_2_rut).encode())).decode() if s.professor_2_rut != None else None,
+            "lab_professor_rut":  cipher.decrypt((str(s.lab_professor_rut).encode())).decode() if s.lab_professor_rut != None else None,
             "special_room":       getattr(s, "special_room", None),
             "class_distribution": getattr(s, "class_distribution", None),
             "required_clases":      s.required_clases,
@@ -525,12 +527,13 @@ def load_and_schedule_data(file_path: str) -> bool:
     """
     try:
         # Load sections from file
-        sections = load_course_sections(file_path)
+        sections, fernet_key = load_course_sections(file_path)
         if not sections:
             st.error("Failed to load sections from file")
             return False
         
         st.session_state.sections = sections
+        st.session_state.fernet_key = fernet_key
         
         # Run automated scheduler
         scheduler = CourseScheduler(sections)
