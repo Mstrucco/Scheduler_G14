@@ -17,6 +17,9 @@ from pathlib import Path
 from typing import Dict, Set, Optional, List
 import pandas as pd
 import math
+import os
+from cryptography.fernet import Fernet
+from dotenv import load_dotenv
 
 from ..models.models import (
     ACADEMIC_BLOCKS,
@@ -33,6 +36,37 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ============================================================================
+# ENCRYPTION MANAGEMENT
+# ============================================================================
+
+load_dotenv()  # Load EncryptionKey from .env if present
+
+def _get_rut_cipher() -> Optional[Fernet]:
+    """Build the Fernet cipher used to encrypt professor RUTs for anonymization.
+
+    The key lives in the gitignored .env file as EncryptionKey. If it is missing
+    or invalid we return None, and RUTs fall back to their raw stored token
+    rather than crashing the app (e.g. on a fresh clone without a .env)."""
+    key = os.getenv("EncryptionKey")
+    if not key:
+        return None
+    try:
+        return Fernet(key.encode())
+    except Exception:
+        return None
+
+def _encrypt_rut(cipher: Optional[Fernet], value) -> Optional[str]:
+    """Encrypt a professor RUT for anonymization. Falls back to the raw value for
+    placeholders (e.g. UNKNOWN_PROF_1) or when the key is unavailable/invalid."""
+    if value is None:
+        return None
+    if cipher is None:
+        return value
+    try:
+        return cipher.encrypt(str(value).encode()).decode()
+    except Exception:
+        return value
 
 # ============================================================================
 # TIME SLOT PARSING
@@ -257,6 +291,7 @@ def load_course_sections(file_path: str) -> List[CourseSection]:
     course_sections = []
 
     if 'profs' in locals():
+        # Cleaning of the raw Master File to ensure that only valid Plan Común courses are processed
         df = df.dropna(subset=["Plan Común"])
 
         full = '10:30-11:20,11:30-12:20,12:30-13:20,13:30-14:20,14:30-15:20,15:30-16:20,16:30-17:20'
@@ -319,13 +354,20 @@ def load_course_sections(file_path: str) -> List[CourseSection]:
             # RUT identifiers arrive pre-encrypted in the source file and are
             # passed through untouched. They serve as opaque unique keys for the
             # solver; the UI decrypts them for display (see serialize_sections).
+            cipher = _get_rut_cipher()
             professor_1_rut = str(row["RUT PROFESOR 1"]).strip()
             if not professor_1_rut or professor_1_rut == "nan":
                 logger.warning(f"Row {idx} ({section_key}): Missing RUT PROFESOR 1")
                 professor_1_rut = "UNKNOWN_PROF_1"
+            else:
+                professor_1_rut = _encrypt_rut(cipher, professor_1_rut)
 
             professor_2_rut = _extract_optional_field(row["RUT PROFESOR 2"])
+            if professor_2_rut:
+                professor_2_rut = _encrypt_rut(cipher, professor_2_rut)
             lab_professor_rut = _extract_optional_field(row["RUT PROFESOR LABT"])
+            if lab_professor_rut:
+                lab_professor_rut = _encrypt_rut(cipher, lab_professor_rut)
             
             # Parse availability for each day
             availability_dict = {}
