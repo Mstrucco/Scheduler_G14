@@ -16,9 +16,7 @@ import logging
 from pathlib import Path
 from typing import Dict, Set, Optional, List
 import pandas as pd
-from numpy import isin
 import math
-from cryptography.fernet import Fernet
 
 from ..models.models import (
     ACADEMIC_BLOCKS,
@@ -318,22 +316,16 @@ def load_course_sections(file_path: str) -> List[CourseSection]:
                 row["2+1 o 3? (distribución horario de clases)"]
             )
             
-            fernet_key = b'Kqjq_0SxrRuZ-QvPv0xdVuASGis3tH5efZ-WHvMxbic='
-            cipher = Fernet(fernet_key)
-            # Extract RUT identifiers (encrypted tokens, passed as-is)
+            # RUT identifiers arrive pre-encrypted in the source file and are
+            # passed through untouched. They serve as opaque unique keys for the
+            # solver; the UI decrypts them for display (see serialize_sections).
             professor_1_rut = str(row["RUT PROFESOR 1"]).strip()
             if not professor_1_rut or professor_1_rut == "nan":
                 logger.warning(f"Row {idx} ({section_key}): Missing RUT PROFESOR 1")
                 professor_1_rut = "UNKNOWN_PROF_1"
-            else:
-                professor_1_rut = cipher.encrypt(professor_1_rut.encode()).decode()
-            
+
             professor_2_rut = _extract_optional_field(row["RUT PROFESOR 2"])
-            if professor_2_rut:
-                professor_2_rut = cipher.encrypt(professor_2_rut.encode()).decode()
             lab_professor_rut = _extract_optional_field(row["RUT PROFESOR LABT"])
-            if lab_professor_rut:
-                lab_professor_rut = cipher.encrypt(lab_professor_rut.encode()).decode()
             
             # Parse availability for each day
             availability_dict = {}
@@ -378,7 +370,7 @@ def load_course_sections(file_path: str) -> List[CourseSection]:
             logger.warning(f"Row {idx}: Unexpected error during row processing - {e}")
             continue
     
-    return course_sections, fernet_key
+    return course_sections
 
 
 def _extract_optional_field(value) -> Optional[str]:
@@ -404,131 +396,3 @@ def _extract_optional_field(value) -> Optional[str]:
 # ============================================================================
 # EXECUTABLE TEST BLOCK
 # ============================================================================
-
-if __name__ == "__main__":
-    print("=" * 80)
-    print("DATA INGESTION AND TOKENIZATION ENGINE - TEST BLOCK")
-    print("=" * 80)
-    
-    # Test 1: String Parsing with Missing Leading Zeros
-    print("\n[TEST 1] Time Slot String Parsing")
-    print("-" * 80)
-    
-    test_cases_parsing = [
-        ("8:30-9:20", "Single block with missing leading zero"),
-        ("08:30-09:20", "Single block with leading zeros"),
-        ("8:30-9:20, 10:30-11:20", "Multiple blocks with missing leading zeros"),
-        ("08:30-10:20", "Multi-block range"),
-        ("17:30-18:20.", "With trailing period"),
-        ("17:30-18:20 , 20:30-21:20", "Multiple ranges with extra spaces"),
-        ("", "Empty string"),
-        ("invalid", "Invalid format"),
-    ]
-    
-    for input_str, description in test_cases_parsing:
-        try:
-            result = parse_availability_string(input_str)
-            print(f"  ✓ {description}")
-            print(f"    Input: '{input_str}' -> Blocks: {sorted(result)}")
-        except Exception as e:
-            print(f"  ✗ {description}: {e}")
-    
-    # Test 2: Block Index Matching
-    print("\n[TEST 2] Block Index Matching Against ACADEMIC_BLOCKS")
-    print("-" * 80)
-    print("  Available blocks in ACADEMIC_BLOCKS:")
-    for idx, block in ACADEMIC_BLOCKS.items():
-        print(f"    Block {idx:2d}: {block.start_time}-{block.end_time}")
-    
-    print("\n  Test time matching:")
-    test_times = [
-        ("8:30", "08:30"),
-        ("09:30", "09:30"),
-        ("17:30", "17:30"),
-        ("21:20", "21:20"),
-    ]
-    
-    for input_time, expected_normalized in test_times:
-        normalized = _normalize_time(input_time)
-        block_idx = _find_block_by_time(normalized)
-        match = "✓" if normalized == expected_normalized else "✗"
-        print(f"  {match} '{input_time}' -> normalized: '{normalized}' -> Block {block_idx}")
-    
-    # Test 3: Mock Data Loading
-    print("\n[TEST 3] Mock Data Loading and CourseSection Creation")
-    print("-" * 80)
-    
-    mock_data = {
-        "LLAVE Código- sec": ["ING12011", "ING12012", "MAT10011"],
-        "CODIGO": ["ING1201", "ING1201", "MAT1001"],
-        "TITULO": ["Cálculo I", "Cálculo I (Alternate)", "Algebra Lineal"],
-        "Plan Común": [1, 1, 1],
-        "Clases": [3, 3, 3],
-        "Ayudantías": [1, 1, 1],
-        "Laboratorios o Talleres": [0, 0, 0],
-        "Sala especial": [None, "ComputerLab", None],
-        "2+1 o 3? (distribución horario de clases)": ["2+1", None, "3"],
-        "LUNES": ["8:30-9:20, 10:30-11:20", "8:30-10:20", "9:30-11:20"],
-        "MARTES": ["8:30-9:20", "8:30-9:20", "10:30-11:20"],
-        "MIERCOLES": ["8:30-9:20", "8:30-9:20", "8:30-9:20"],
-        "JUEVES": ["8:30-9:20", "13:30-14:20", "13:30-14:20"],
-        "VIERNES": ["13:30-14:20", "13:30-14:20", "13:30-14:20"],
-        "RUT PROFESOR 1": ["ENC_PROF_001", "ENC_PROF_002", "ENC_PROF_003"],
-        "RUT PROFESOR 2": ["ENC_PROF_004", None, "ENC_PROF_005"],
-        "RUT PROFESOR LABT": [None, None, None],
-    }
-    
-    df_mock = pd.DataFrame(mock_data)
-    
-    # Save mock data to temporary CSV for testing
-    mock_file_path = Path("/tmp/mock_schedule.xlsx")
-    df_mock.to_csv(mock_file_path, index=False)
-    
-    print(f"  Created mock data file: {mock_file_path}")
-    
-    try:
-        sections, fernet_key = load_course_sections(str(mock_file_path))
-        
-        print(f"\n  ✓ Successfully loaded {len(sections)} course sections:")
-        
-        for section in sections:
-            print(f"\n    Section: {section.section_key}")
-            print(f"      Title: {section.title}")
-            print(f"      Course Code: {section.course_code}")
-            print(f"      Clases: {section.required_clases}, "
-                  f"Ayudantías: {section.required_ayudantias}, "
-                  f"Laboratorios: {section.required_laboratorios}")
-            print(f"      Professor 1 RUT: {section.professor_1_rut}")
-            print(f"      Professor 2 RUT: {section.professor_2_rut}")
-            print(f"      Lab Professor RUT: {section.lab_professor_rut}")
-            print(f"      Special Room: {section.special_room}")
-            print(f"      Distribution: {section.class_distribution}")
-            print(f"      Allowed Slots: {len(section.allowed_slots)} slots")
-            
-            # Show slot breakdown by day
-            for day in DayOfWeek:
-                day_slots = sorted([s.block_index for s in section.allowed_slots if s.day == day])
-                if day_slots:
-                    print(f"        {day.name:10s}: Blocks {day_slots}")
-    
-    except Exception as e:
-        print(f"  ✗ Error loading mock data: {e}")
-    
-    # Test 4: Encrypted Token Handling (Blind Optimization)
-    print("\n[TEST 4] Encrypted Token Handling - Blind Optimization Pattern")
-    print("-" * 80)
-    print("  ✓ RUT columns treated as opaque encrypted identifiers")
-    print("  ✓ No decryption logic in this module")
-    print("  ✓ No environment key loading")
-    print("  ✓ Tokens passed directly to CourseSection objects")
-    
-    if sections:
-        sample_section = sections[0]
-        print(f"\n  Sample encrypted identifiers from first section:")
-        print(f"    Professor 1 Token: {sample_section.professor_1_rut}")
-        print(f"    Professor 2 Token: {sample_section.professor_2_rut}")
-        print(f"    Lab Professor Token: {sample_section.lab_professor_rut}")
-    
-    print("\n" + "=" * 80)
-    print("✓ Data ingestion engine initialized and tested successfully!")
-    print("=" * 80 + "\n")

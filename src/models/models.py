@@ -184,29 +184,40 @@ class GlobalTimeConstraints:
     FORBIDDEN_AYUDANTIA_BLOCKS = frozenset([0, 1, 2, 3])
     
     @staticmethod
-    def is_slot_globally_invalid(timeslot: TimeSlot, session_type: SessionType) -> bool:
+    def is_slot_globally_invalid(
+        timeslot: TimeSlot,
+        session_type: SessionType,
+        plan_comun_level: Optional[int] = None,
+    ) -> bool:
         """
         Check if a TimeSlot violates any global institutional constraints.
-        
+
+        Rules 1 (Tue/Wed evening) and 2 (Friday morning) only apply to Plan Común
+        levels 3 and 4. Pass plan_comun_level=None to apply them unconditionally
+        (backward-compatible default for callers that don't know the level).
+
         Args:
             timeslot: The TimeSlot to validate
             session_type: Type of session (Clase, Ayudantía, Laboratorio)
-        
+            plan_comun_level: Optional semester level (1–4)
+
         Returns:
             True if the slot is invalid (violates a constraint), False otherwise
         """
-        if timeslot.day in (DayOfWeek.MARTES, DayOfWeek.MIERCOLES):
-            if timeslot.block_index in GlobalTimeConstraints.FORBIDDEN_MARTES_MIERCOLES_BLOCKS:
-                return True
-        
-        if timeslot.day == DayOfWeek.VIERNES:
-            if timeslot.block_index in GlobalTimeConstraints.FORBIDDEN_VIERNES_BLOCKS:
-                return True
-        
+        # Rules 1 & 2 do not apply to Plan Común 1 and 2
+        if plan_comun_level not in (1, 2):
+            if timeslot.day in (DayOfWeek.MARTES, DayOfWeek.MIERCOLES):
+                if timeslot.block_index in GlobalTimeConstraints.FORBIDDEN_MARTES_MIERCOLES_BLOCKS:
+                    return True
+
+            if timeslot.day == DayOfWeek.VIERNES:
+                if timeslot.block_index in GlobalTimeConstraints.FORBIDDEN_VIERNES_BLOCKS:
+                    return True
+
         if session_type == SessionType.AYUDANTIA:
             if timeslot.block_index in GlobalTimeConstraints.FORBIDDEN_AYUDANTIA_BLOCKS:
                 return True
-        
+
         return False
     
     @staticmethod

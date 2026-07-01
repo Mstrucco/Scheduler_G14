@@ -41,20 +41,31 @@ class CourseScheduler:
     def __init__(self, sections: List[CourseSection], relaxation_flags: Optional[Dict[str, bool]] = None) -> None:
         """
         Initialize the scheduler with course sections.
-        
+
         Args:
             sections: List of CourseSection objects to schedule
+            relaxation_flags: Dict of relaxation options (all default to False):
+                - 'relax_availability'     : ignore professor declared availability (all semesters)
+                - 'relax_3juntas_medium'   : allow 3-juntas in any consecutive 3 blocks within 1–7
+                - 'relax_3juntas_full'     : allow 3-juntas in any consecutive 3 blocks in the day
+                - 'relax_block4'           : single-block sessions can use any slot (not just block 4)
+                - 'relax_ayudantia_partial': only blocks 0–2 forbidden for Ayudantías
+                - 'relax_ayudantia_full'   : no morning restriction for Ayudantías
         """
         self.sections = sections
         self.model = cp_model.CpModel()
         self.vars: Dict[Tuple, cp_model.IntVar] = {}
         self._solver_solution = {}
-        self._relaxation_flags = relaxation_flags or {
-            'plan_comun_1': False,
-            'plan_comun_2': False,
-            'plan_comun_3': False,
-            'plan_comun_4': False,
+        self._relaxation_flags: Dict[str, bool] = {
+            'relax_availability': False,
+            'relax_3juntas_medium': False,
+            'relax_3juntas_full': False,
+            'relax_block4': False,
+            'relax_ayudantia_partial': False,
+            'relax_ayudantia_full': False,
         }
+        if relaxation_flags:
+            self._relaxation_flags.update(relaxation_flags)
         
         # Build the model
         self._build_model()
@@ -82,55 +93,97 @@ class CourseScheduler:
         # 5. Set maximization objective
         self._set_objective()
     
+    # ------------------------------------------------------------------
+    # Relaxation helpers
+    # ------------------------------------------------------------------
+
+    def _get_valid_3juntas_blocks(self) -> Set[int]:
+        """Block indices that 3-juntas Clase sessions may occupy."""
+        flags = self._relaxation_flags
+        if flags.get('relax_3juntas_full'):
+            return set(range(13))
+        if flags.get('relax_3juntas_medium'):
+            return set(range(1, 8))   # blocks 1–7 → triplets {1,2,3}…{5,6,7}
+        return {2, 3, 4, 5, 6}        # fixed: only {2,3,4} or {4,5,6}
+
+    def _get_forbidden_ayudantia_blocks(self) -> Set[int]:
+        """Block indices that are forbidden for Ayudantías."""
+        flags = self._relaxation_flags
+        if flags.get('relax_ayudantia_full'):
+            return set()
+        if flags.get('relax_ayudantia_partial'):
+            return {0, 1, 2}
+        return set(GlobalTimeConstraints.FORBIDDEN_AYUDANTIA_BLOCKS)  # {0,1,2,3}
+
+    # ------------------------------------------------------------------
+
     def _create_decision_variables(self) -> None:
         """
         Create boolean decision variables for each valid section/session/slot.
-        
+
         Variables: self.vars[(section_key, session_type, day, block_index)]
-        Only created for slots that:
-        - Exist in section.allowed_slots
-        - Don't violate GlobalTimeConstraints
+        A variable is created only when all of the following hold:
+        - The slot is in the section's allowed_slots (or availability is relaxed)
+        - The slot does not violate global time rules for this plan_comun_level
+        - For 3-juntas Clases: the block is within the valid 3-juntas range
         """
+        flags = self._relaxation_flags
+        forbidden_ayudantia = self._get_forbidden_ayudantia_blocks()
+
         for section in self.sections:
             section_key = section.section_key
-            
-            # Process each session type
+            plan_level = section.plan_comun_level
+
             for session_type_enum in [SessionType.CLASE, SessionType.AYUDANTIA, SessionType.LABORATORIO]:
-                # Determine required blocks for this session type
                 if session_type_enum == SessionType.CLASE:
                     required_blocks = section.required_clases
                 elif session_type_enum == SessionType.AYUDANTIA:
                     required_blocks = section.required_ayudantias
-                else:  # LABORATORIO
+                else:
                     required_blocks = section.required_laboratorios
-                
+
                 if required_blocks == 0:
                     continue
-                
-                # Relaxed Availability Case
-                if self._relaxation_flags[f"plan_comun_{section.plan_comun_level}"]:
-                    relaxed_availability = {
-                        DayOfWeek.LUNES: frozenset([0, 1, 2, 3, 4, 5, 6, 7, 8]),
-                        DayOfWeek.MARTES: frozenset([0, 1, 2, 3, 4, 5, 6, 7, 8]),
-                        DayOfWeek.MIERCOLES: frozenset([0, 1, 2, 3, 4, 5, 6, 7, 8]),
-                        DayOfWeek.JUEVES: frozenset([0, 1, 2, 3, 4, 5, 6, 7, 8]),
-                        DayOfWeek.VIERNES: frozenset([0, 1, 2, 3, 4, 5, 6, 7, 8]),
+
+                # Determine candidate slots (professor availability or relaxed)
+                if flags.get('relax_availability'):
+                    relaxed_avail = {
+                        DayOfWeek.LUNES:     frozenset(range(9)),
+                        DayOfWeek.MARTES:    frozenset(range(9)),
+                        DayOfWeek.MIERCOLES: frozenset(range(9)),
+                        DayOfWeek.JUEVES:    frozenset(range(9)),
+                        DayOfWeek.VIERNES:   frozenset(range(9)),
                     }
-                    prof_availability = create_professor_available_slots(relaxed_availability)
-                    for slot in prof_availability:
-                        if GlobalTimeConstraints.is_slot_globally_invalid(slot, session_type_enum):
-                            continue
-                        var_key = (section_key, session_type_enum.value, slot.day.value, slot.block_index)
-                        self.vars[var_key] = self.model.NewBoolVar(f"slot_{var_key}")
+                    available_slots = create_professor_available_slots(relaxed_avail)
                 else:
-                    # Create variables for valid slots
-                    for slot in section.allowed_slots:
-                        # Check if slot is globally invalid
-                        if GlobalTimeConstraints.is_slot_globally_invalid(slot, session_type_enum):
+                    available_slots = section.allowed_slots
+
+                # For 3-juntas Clases: pre-compute valid block set
+                valid_3juntas: Optional[Set[int]] = None
+                if section.class_distribution == "3-juntas" and session_type_enum == SessionType.CLASE:
+                    valid_3juntas = self._get_valid_3juntas_blocks()
+
+                for slot in available_slots:
+                    # Rule 1 & 2: Tue/Wed evening and Friday morning (only Plan Común 3 & 4)
+                    if plan_level not in (1, 2):
+                        if slot.day in (DayOfWeek.MARTES, DayOfWeek.MIERCOLES):
+                            if slot.block_index in GlobalTimeConstraints.FORBIDDEN_MARTES_MIERCOLES_BLOCKS:
+                                continue
+                        if slot.day == DayOfWeek.VIERNES:
+                            if slot.block_index in GlobalTimeConstraints.FORBIDDEN_VIERNES_BLOCKS:
+                                continue
+
+                    # Rule 3: Ayudantía morning (with relaxation)
+                    if session_type_enum == SessionType.AYUDANTIA:
+                        if slot.block_index in forbidden_ayudantia:
                             continue
-                        
-                        var_key = (section_key, session_type_enum.value, slot.day.value, slot.block_index)
-                        self.vars[var_key] = self.model.NewBoolVar(f"slot_{var_key}")
+
+                    # 3-juntas block range restriction
+                    if valid_3juntas is not None and slot.block_index not in valid_3juntas:
+                        continue
+
+                    var_key = (section_key, session_type_enum.value, slot.day.value, slot.block_index)
+                    self.vars[var_key] = self.model.NewBoolVar(f"slot_{var_key}")
     
     def _add_demand_constraints(self) -> None:
         """
@@ -249,14 +302,19 @@ class CourseScheduler:
     def _add_block4_constraint(self) -> None:
         """
         Add Block 4 (lunch hour) single-allocation rule.
-        
-        Block 4 = 12:30-13:20 slot
+
+        Block 4 = 12:30–13:20 slot
         Rules:
         1. If a section needs exactly 1 block for a session type,
            only allow allocation to block 4.
         2. For "2+1" distributions, if any day has exactly 1 lecture,
            that block must be block 4.
+
+        Skipped entirely when 'relax_block4' is enabled.
         """
+        if self._relaxation_flags.get('relax_block4'):
+            return
+
         for section in self.sections:
             section_key = section.section_key
             
@@ -303,52 +361,63 @@ class CourseScheduler:
     
     def _add_contiguous_blocks_constraint(self) -> None:
         """
-        Add contiguous block allocation rule for "3-in-a-row" distribution.
-        
+        Add contiguous block allocation rule for "3-juntas" distribution.
+
         If a section has "3-juntas" (3 lectures together):
         - All 3 blocks must occur on the same day
         - All 3 blocks must be consecutive
+        - Fixed case (no relaxation): only triplets {2,3,4} or {4,5,6} are valid.
+          Variables for blocks outside 2–6 are never created, and an extra
+          constraint (x₃ ≤ x₂) prevents the otherwise-legal {3,4,5} triplet.
+        - Relaxation B: any consecutive triplet within blocks 1–7
+        - Relaxation C: any consecutive triplet in the day (no block restriction)
         """
+        flags = self._relaxation_flags
+        # 'restrict_start' is True in the fixed case: only start blocks 2 or 4 allowed
+        restrict_start = not (flags.get('relax_3juntas_medium') or flags.get('relax_3juntas_full'))
+
         for section in self.sections:
             if section.class_distribution != "3-juntas":
                 continue
-            
+
             section_key = section.section_key
-            
-            # For each day, enforce that if blocks b and b+2 are active,
-            # then b+1 must also be active, and sum must equal 3
+
             for day_enum in DayOfWeek:
                 day_val = day_enum.value
-                
+
                 day_vars = {
                     block: var for (sk, st, day, block), var in self.vars.items()
                     if sk == section_key and st == SessionType.CLASE.value and day == day_val
                 }
-                
+
                 if len(day_vars) < 3:
                     continue
-                
-                # For each possible consecutive triplet
-                for start_block in range(11):  # Blocks 0-10 can start triplets (0-2, ..., 10-12)
+
+                # Gap-filling: if b and b+2 are both active, b+1 must be active
+                for start_block in range(11):
                     b0 = day_vars.get(start_block)
                     b1 = day_vars.get(start_block + 1)
                     b2 = day_vars.get(start_block + 2)
-                    
+
                     if b0 is not None and b1 is not None and b2 is not None:
-                        # If b0 and b2 are active, b1 must be active
                         self.model.Add(b1 >= b0 + b2 - 1)
-                
-                # If any blocks are active on this day, exactly 3 must be active
-                # (and they must be consecutive by the above logic)
+
+                # Exactly 3 active on this day (or 0)
                 active_vars = list(day_vars.values())
                 if active_vars:
-                    # If sum > 0, then sum == 3 (for 3-juntas)
-                    # This is optional: we allow 0 blocks but not 1 or 2
                     total = self.model.NewIntVar(0, 3, f"3juntas_day_{section_key}_{day_val}_total")
                     self.model.Add(total == sum(active_vars))
-                    # Enforce: if total > 0, then total == 3
                     for var in active_vars:
                         self.model.Add(total == 3).OnlyEnforceIf(var)
+
+                # Fixed case: prevent triplet {3,4,5}
+                # (variables are already restricted to blocks 2–6, so the only
+                # remaining invalid triplet is {3,4,5}; x₃ ≤ x₂ rules it out)
+                if restrict_start:
+                    x2 = day_vars.get(2)
+                    x3 = day_vars.get(3)
+                    if x2 is not None and x3 is not None:
+                        self.model.Add(x3 <= x2)
     
     def _set_objective(self) -> None:
         """Set the optimization objective: maximize total scheduled blocks."""
@@ -476,13 +545,13 @@ class CourseScheduler:
         prof_rut = section.professor_1_rut
         slot_conflicts = []
         for slot in section.allowed_slots:
-            if GlobalTimeConstraints.is_slot_globally_invalid(slot, SessionType.CLASE):
+            if GlobalTimeConstraints.is_slot_globally_invalid(slot, SessionType.CLASE, section.plan_comun_level):
                 slot_conflicts.append(f"{slot.day.name} Block {slot.block_index}")
         
         if slot_conflicts:
             diagnosis['bottlenecks'].append({
                 'type': 'global_constraint',
-                'description': f'Professor {prof_rut} has {len(slot_conflicts)} slots violating global constraints',
+                'description': f'Professor {prof_rut} has {len(slot_conflicts)} slots violating global constraints (Plan Común {section.plan_comun_level})',
                 'examples': slot_conflicts[:3],
             })
         

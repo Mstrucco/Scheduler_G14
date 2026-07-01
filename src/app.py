@@ -15,9 +15,11 @@ from io import BytesIO
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 import json
+import os
 import html as html_utils
 from datetime import datetime
 from cryptography.fernet import Fernet
+from dotenv import load_dotenv
 
 # Local imports
 from src.data.loader import load_course_sections
@@ -31,6 +33,37 @@ from src.models.models import (
 )
 from src.components.dnd_grid import dnd_grid as dnd_grid_component
 
+# Load the RUT decryption key (EncryptionKey) from the local .env file, if present.
+load_dotenv()
+
+
+def _get_rut_cipher() -> Optional[Fernet]:
+    """Build the Fernet cipher used to decrypt professor RUTs for display.
+
+    The key lives in the gitignored .env file as EncryptionKey. If it is missing
+    or invalid we return None, and RUTs fall back to their raw stored token
+    rather than crashing the app (e.g. on a fresh clone without a .env)."""
+    key = os.getenv("EncryptionKey")
+    if not key:
+        return None
+    try:
+        return Fernet(key.encode())
+    except Exception:
+        return None
+
+
+def _decrypt_rut(cipher: Optional[Fernet], value) -> Optional[str]:
+    """Decrypt a stored RUT token for display. Falls back to the raw value for
+    placeholders (e.g. UNKNOWN_PROF_1) or when the key is unavailable/invalid."""
+    if value is None:
+        return None
+    if cipher is None:
+        return value
+    try:
+        return cipher.decrypt(str(value).encode()).decode()
+    except Exception:
+        return value
+
 def serialize_schedule_matrix() -> dict:
     """Convierte las keys de tupla a string 'day,block' para JSON."""
     return {
@@ -41,16 +74,16 @@ def serialize_schedule_matrix() -> dict:
 def serialize_sections() -> list:
     """Convierte los objetos section a dicts para JSON."""
     result = []
-    cipher = Fernet(b'Kqjq_0SxrRuZ-QvPv0xdVuASGis3tH5efZ-WHvMxbic=')
+    cipher = _get_rut_cipher()
     for s in st.session_state.sections:
         result.append({
             "section_key":        s.section_key,
             "course_code":        s.course_code,
             "title":              s.title,
             "plan_comun_level":   s.plan_comun_level,
-            "professor_1_rut":    cipher.decrypt((str(s.professor_1_rut).encode())).decode() if s.professor_1_rut != None else None,
-            "professor_2_rut":    cipher.decrypt((str(s.professor_2_rut).encode())).decode() if s.professor_2_rut != None else None,
-            "lab_professor_rut":  cipher.decrypt((str(s.lab_professor_rut).encode())).decode() if s.lab_professor_rut != None else None,
+            "professor_1_rut":    _decrypt_rut(cipher, s.professor_1_rut),
+            "professor_2_rut":    _decrypt_rut(cipher, s.professor_2_rut),
+            "lab_professor_rut":  _decrypt_rut(cipher, s.lab_professor_rut),
             "special_room":       getattr(s, "special_room", None),
             "class_distribution": getattr(s, "class_distribution", None),
             "required_clases":      s.required_clases,
@@ -85,14 +118,13 @@ def initialize_session_state() -> None:
     
     if "relaxation_flags" not in st.session_state:
         st.session_state.relaxation_flags = {
-            "plan_comun_1": False,
-            "plan_comun_2": False,
-            "plan_comun_3": False,
-            "plan_comun_4": False,
+            'relax_availability': False,
+            'relax_3juntas_medium': False,
+            'relax_3juntas_full': False,
+            'relax_block4': False,
+            'relax_ayudantia_partial': False,
+            'relax_ayudantia_full': False,
         }
-    
-    if "drag_drop_state" not in st.session_state:
-        st.session_state.drag_drop_state = {}
 
 
 # ============================================================================
@@ -479,47 +511,6 @@ def apply_schedule_action(payload: Dict[str, Any]) -> Tuple[bool, str]:
     return False, "The drag source could not be read."
 
 
-def process_pending_drag_drop_action() -> None:
-    """Read one pending drag/drop action from query params and apply it once."""
-    params = st.experimental_get_query_params()
-    raw_payload_values = params.get("schedule_move")
-    if not raw_payload_values:
-        return
-
-    raw_payload = raw_payload_values[-1] if isinstance(raw_payload_values, list) else raw_payload_values
-    try:
-        payload = json.loads(raw_payload)
-        success, message = apply_schedule_action(payload)
-    except Exception as exc:
-        success = False
-        message = f"Could not apply drag/drop change: {exc}"
-
-    st.session_state.drag_drop_state["last_feedback"] = {
-        "success": success,
-        "message": message,
-    }
-
-    cleaned_params = {
-        key: value
-        for key, value in params.items()
-        if key not in {"schedule_move", "schedule_move_nonce"}
-    }
-    st.experimental_set_query_params(**cleaned_params)
-    st.experimental_rerun()
-
-
-def render_drag_drop_feedback() -> None:
-    """Show the result of the latest drag/drop change once."""
-    feedback = st.session_state.drag_drop_state.pop("last_feedback", None)
-    if not feedback:
-        return
-
-    if feedback.get("success"):
-        st.success(feedback.get("message", "Schedule updated."))
-    else:
-        st.error(feedback.get("message", "Schedule update failed."))
-
-
 def load_and_schedule_data(file_path: str) -> bool:
     """
     Load course data and run initial automated scheduling.
@@ -527,14 +518,13 @@ def load_and_schedule_data(file_path: str) -> bool:
     """
     try:
         # Load sections from file
-        sections, fernet_key = load_course_sections(file_path)
+        sections = load_course_sections(file_path)
         if not sections:
             st.error("Failed to load sections from file")
             return False
-        
+
         st.session_state.sections = sections
-        st.session_state.fernet_key = fernet_key
-        
+
         # Run automated scheduler
         scheduler = CourseScheduler(sections)
         scheduled_blocks, conflict_report = scheduler.solve(timeout_seconds=60)
@@ -559,130 +549,6 @@ def load_and_schedule_data(file_path: str) -> bool:
 # ============================================================================
 # CONSTRAINT VALIDATION ENGINE
 # ============================================================================
-
-def _legacy_validate_schedule() -> Dict:
-    """
-    Run constraint validation sweep over active schedule matrix.
-    Returns report dict with violations list.
-    """
-    report = {
-        "valid": True,
-        "violations": [],
-        "stats": {
-            "total_slots_used": 0,
-            "total_sections": len(st.session_state.sections),
-            "scheduled_blocks": 0,
-            "unscheduled_blocks": sum(len(v) for v in st.session_state.unassigned_blocks.values()),
-        }
-    }
-    
-    # Track professors by (day, block) to detect double-booking
-    professor_bookings: Dict[Tuple, List] = {}
-    
-    # Track rooms by (day, block) to detect room conflicts
-    room_bookings: Dict[Tuple, List] = {}
-    
-    # Iterate through schedule matrix
-    for (day_val, block_idx), blocks in st.session_state.schedule_matrix.items():
-        report["stats"]["total_slots_used"] += 1
-        report["stats"]["scheduled_blocks"] += len(blocks)
-        
-        for section_key, session_type, room in blocks:
-            # Find section details
-            section = next((s for s in st.session_state.sections if s.section_key == section_key), None)
-            if not section:
-                continue
-            
-            # Determine professor based on session type
-            if session_type == SessionType.CLASE.value:
-                professor = section.professor_1_rut
-            elif session_type == SessionType.AYUDANTIA.value:
-                professor = section.professor_2_rut or section.professor_1_rut
-            else:  # LABORATORIO
-                professor = section.lab_professor_rut or section.professor_1_rut
-            
-            # Check professor double-booking
-            prof_key = (day_val, block_idx, professor)
-            if prof_key not in professor_bookings:
-                professor_bookings[prof_key] = []
-            professor_bookings[prof_key].append((section_key, session_type))
-            
-            # Check room conflicts (if special room specified)
-            if section.special_room and section.special_room.strip():
-                room_key = (day_val, block_idx, section.special_room)
-                if room_key not in room_bookings:
-                    room_bookings[room_key] = []
-                room_bookings[room_key].append((section_key, session_type))
-    
-    # Report professor double-bookings
-    for (day_val, block_idx, prof), sections in professor_bookings.items():
-        if len(sections) > 1:
-            report["valid"] = False
-            day_name = DayOfWeek(day_val).name
-            block_time = ACADEMIC_BLOCKS[block_idx]
-            report["violations"].append({
-                "type": "PROFESSOR_DOUBLE_BOOKING",
-                "day": day_name,
-                "block": f"{block_idx} ({block_time.start_time}-{block_time.end_time})",
-                "professor": prof[:20] + "..." if len(prof) > 20 else prof,
-                "sections": len(sections),
-                "details": f"Professor booked {len(sections)} times on {day_name} Block {block_idx}"
-            })
-    
-    # Report room conflicts
-    for (day_val, block_idx, room), sections in room_bookings.items():
-        if len(sections) > 1:
-            report["valid"] = False
-            day_name = DayOfWeek(day_val).name
-            report["violations"].append({
-                "type": "ROOM_CONFLICT",
-                "day": day_name,
-                "block": block_idx,
-                "room": room,
-                "sections": len(sections),
-                "details": f"Room '{room}' booked {len(sections)} times on {day_name} Block {block_idx}"
-            })
-    
-    # Report cohort overlaps
-    for (day_val, block_idx, plan_comun), sections in {}.items():
-        if len(sections) > 1:
-            report["valid"] = False
-            day_name = DayOfWeek(day_val).name
-            report["violations"].append({
-                "type": "COHORT_OVERLAP",
-                "day": day_name,
-                "block": block_idx,
-                "plan_comun_level": plan_comun,
-                "sections": len(sections),
-                "details": f"Plan Común {plan_comun} has {len(sections)} courses on {day_name} Block {block_idx}"
-            })
-    
-    # Check for isolated single blocks outside block 4
-    for section in st.session_state.sections:
-        blocks_scheduled = sum(
-            1 for (day_val, block_idx), blocks in st.session_state.schedule_matrix.items()
-            if any(sk == section.section_key for sk, _, _ in blocks)
-        )
-        
-        total_required = section.required_clases + section.required_ayudantias + section.required_laboratorios
-        if total_required == 1 and blocks_scheduled == 1:
-            # Find which block was scheduled
-            for (day_val, block_idx), blocks in st.session_state.schedule_matrix.items():
-                if any(sk == section.section_key for sk, _, _ in blocks):
-                    if block_idx != 4:  # Block 4 is lunch hour
-                        report["valid"] = False
-                        day_name = DayOfWeek(day_val).name
-                        report["violations"].append({
-                            "type": "INVALID_SINGLE_BLOCK",
-                            "section": section.section_key[:20] + "...",
-                            "block": block_idx,
-                            "day": day_name,
-                            "details": f"Single-block courses must use Block 4 (lunch hour), not Block {block_idx}"
-                        })
-                    break
-    
-    return report
-
 
 def validate_schedule() -> Dict:
     """
@@ -765,7 +631,7 @@ def validate_schedule() -> Dict:
                 )
                 continue
 
-            if GlobalTimeConstraints.is_slot_globally_invalid(slot, session_enum):
+            if GlobalTimeConstraints.is_slot_globally_invalid(slot, session_enum, section.plan_comun_level):
                 add_violation(
                     "GLOBAL_TIME_CONSTRAINT",
                     f"{section.course_code} {normalized_session_type} is in a globally forbidden slot",
@@ -861,7 +727,7 @@ def validate_schedule() -> Dict:
                     scheduled=scheduled_count,
                 )
 
-            if required_blocks == 1:
+            if required_blocks == 1 and not st.session_state.relaxation_flags.get('relax_block4', False):
                 for day_val, block_idx in scheduled_locations[(section.section_key, session_type)]:
                     if block_idx != 4:
                         add_violation(
@@ -912,748 +778,6 @@ def validate_schedule() -> Dict:
                     )
 
     return report
-
-
-# ============================================================================
-# HTML/JAVASCRIPT DRAG-AND-DROP SCHEDULER
-# ============================================================================
-
-def _legacy_generate_dnd_grid_html(plan_comun_level: int) -> str:
-    """
-    Generate HTML/CSS/JavaScript for drag-and-drop schedule grid.
-    """
-    days = ["LUNES", "MARTES", "MIERCOLES", "JUEVES", "VIERNES"]
-    
-    html = """
-    <style>
-        .dnd-container {
-            font-family: Arial, sans-serif;
-            padding: 10px;
-            background: #f5f5f5;
-            border-radius: 8px;
-        }
-        
-        .schedule-grid {
-            border-collapse: collapse;
-            width: 100%;
-            background: white;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-        }
-        
-        .schedule-grid th, .schedule-grid td {
-            border: 1px solid #ddd;
-            padding: 12px;
-            text-align: center;
-            min-width: 120px;
-            min-height: 60px;
-            vertical-align: top;
-        }
-        
-        .schedule-grid th {
-            background: #2c3e50;
-            color: white;
-            font-weight: bold;
-            position: sticky;
-            top: 0;
-        }
-        
-        .block-label {
-            background: #ecf0f1;
-            font-weight: bold;
-            color: #2c3e50;
-            width: 100px;
-        }
-        
-        .drop-zone {
-            background: #ffffff;
-            border: 2px dashed #bdc3c7;
-            transition: all 0.3s ease;
-            cursor: pointer;
-        }
-        
-        .drop-zone:hover {
-            background: #f0f0f0;
-            border-color: #3498db;
-        }
-        
-        .drop-zone.drag-over {
-            background: #e8f4f8;
-            border-color: #2980b9;
-            box-shadow: inset 0 0 10px rgba(52, 152, 219, 0.2);
-        }
-        
-        .course-card {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 8px;
-            margin: 4px 0;
-            border-radius: 6px;
-            cursor: move;
-            font-size: 12px;
-            font-weight: bold;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.2);
-            transition: transform 0.2s ease;
-            user-select: none;
-        }
-        
-        .course-card:hover {
-            transform: scale(1.05);
-            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-        }
-        
-        .course-card.clase {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        }
-        
-        .course-card.ayudantia {
-            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-        }
-        
-        .course-card.laboratorio {
-            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
-        }
-        
-        .unassigned-zone {
-            background: #fff3cd;
-            border: 2px solid #ffc107;
-            border-radius: 8px;
-            padding: 12px;
-            margin: 10px 0;
-        }
-        
-        .unassigned-card {
-            background: white;
-            border-left: 4px solid #ff6b6b;
-            padding: 8px;
-            margin: 4px 0;
-            border-radius: 4px;
-            font-size: 12px;
-        }
-    </style>
-    
-    <div class="dnd-container">
-        <h3>Schedule for Plan Común Level """ + str(plan_comun_level) + """</h3>
-        
-        <table class="schedule-grid">
-            <thead>
-                <tr>
-                    <th class="block-label">Block</th>
-    """
-    
-    for day in days:
-        html += f"<th>{day}</th>"
-    
-    html += """
-                </tr>
-            </thead>
-            <tbody>
-    """
-    
-    # Generate rows for each block
-    for block_idx in range(13):
-        block = ACADEMIC_BLOCKS[block_idx]
-        html += f"""
-                <tr>
-                    <td class="block-label">
-                        <div>{block_idx}</div>
-                        <div style="font-size: 10px; margin-top: 4px;">{block.start_time}-{block.end_time}</div>
-                    </td>
-        """
-        
-        for day_idx, day in enumerate(days):
-            key = (day_idx, block_idx)
-            html += f"""
-                    <td class="drop-zone" data-day="{day_idx}" data-block="{block_idx}" 
-                        ondragover="event.preventDefault(); this.classList.add('drag-over')"
-                        ondragleave="this.classList.remove('drag-over')"
-                        ondrop="dropHandler(event, {plan_comun_level})">
-            """
-            
-            # Add scheduled courses for this slot
-            if key in st.session_state.schedule_matrix:
-                for section_key, session_type, room in st.session_state.schedule_matrix[key]:
-                    section = next((s for s in st.session_state.sections if s.section_key == section_key), None)
-                    if section and section.plan_comun_level == plan_comun_level:
-                        session_class = session_type.lower().replace("ía", "ia")
-                        html += f"""
-                        <div class="course-card {session_class}" draggable="true" 
-                             data-section-key="{section_key}" data-session-type="{session_type}"
-                             ondragstart="dragStartHandler(event)">
-                            {section.course_code[:10]}... | {session_type[:3]}
-                        </div>
-                        """
-            
-            html += "</td>"
-        
-        html += "</tr>"
-    
-    html += """
-            </tbody>
-        </table>
-    </div>
-    
-    <script>
-    function dragStartHandler(event) {
-        event.dataTransfer.effectAllowed = 'move';
-        event.dataTransfer.setData('text/html', event.currentTarget.innerHTML);
-        event.dataTransfer.setData('section-key', event.currentTarget.dataset.sectionKey);
-        event.dataTransfer.setData('session-type', event.currentTarget.dataset.sessionType);
-        event.currentTarget.style.opacity = '0.5';
-    }
-    
-    function dropHandler(event, planComunLevel) {
-        event.preventDefault();
-        event.currentTarget.classList.remove('drag-over');
-        
-        const sectionKey = event.dataTransfer.getData('section-key');
-        const sessionType = event.dataTransfer.getData('session-type');
-        const day = event.currentTarget.dataset.day;
-        const block = event.currentTarget.dataset.block;
-        
-        // Send update to Streamlit
-        const updateData = {
-            action: 'move_block',
-            section_key: sectionKey,
-            session_type: sessionType,
-            day: parseInt(day),
-            block: parseInt(block),
-            plan_comun: planComunLevel
-        };
-        
-        // Store in browser session for Streamlit to read
-        window.parent.postMessage(updateData, '*');
-        
-        // Simulate successful drop
-        event.currentTarget.innerHTML += `<div class="course-card" style="opacity: 0.8;">${sectionKey.substring(0, 12)}...</div>`;
-    }
-    </script>
-    """
-    
-    return html
-
-
-def generate_dnd_grid_html(plan_comun_level: int) -> str:
-    """
-    Generate the editable schedule grid and unassigned bank.
-
-    Streamlit's built-in HTML component is one-way, so drops are persisted by
-    writing a small JSON payload into the parent page's query params. The app
-    consumes that payload on the next rerun and updates session_state.
-    """
-    days = ["LUNES", "MARTES", "MIERCOLES", "JUEVES", "VIERNES"]
-    section_lookup = get_section_lookup()
-
-    def esc(value: Any) -> str:
-        return html_utils.escape(str(value or ""), quote=True)
-
-    def render_course_card(
-        section: Any,
-        session_type: Any,
-        room: Optional[str],
-        source: str,
-        source_day: Optional[int] = None,
-        source_block: Optional[int] = None,
-        item_index: Optional[int] = None,
-        reason: Optional[str] = None,
-    ) -> str:
-        normalized_session_type = normalize_session_type(session_type)
-        css_class = session_css_class(normalized_session_type)
-        professor = get_professor_for_session(section, normalized_session_type)
-        room_label = get_room_for_section(section, room)
-        requirements = get_session_requirements(section)
-        required_count = requirements.get(normalized_session_type, 0)
-
-        tooltip_lines = [
-            ("Course", f"{section.course_code} - {section.title}"),
-            ("Section", section.section_key),
-            ("Session", normalized_session_type),
-            ("Plan Comun", section.plan_comun_level),
-            ("Required", f"{required_count} block(s)"),
-            ("Professor", professor),
-            ("Room", room_label),
-        ]
-        if section.class_distribution:
-            tooltip_lines.append(("Distribution", section.class_distribution))
-        if reason:
-            tooltip_lines.append(("Reason", reason))
-
-        tooltip_html = "".join(
-            f"<div><strong>{esc(label)}:</strong> {esc(value)}</div>"
-            for label, value in tooltip_lines
-        )
-        title_attr = esc(" | ".join(f"{label}: {value}" for label, value in tooltip_lines))
-        reason_html = ""
-        if reason:
-            reason_html = f'<div class="course-reason">{esc(short_text(reason, 64))}</div>'
-
-        source_day_attr = "" if source_day is None else str(source_day)
-        source_block_attr = "" if source_block is None else str(source_block)
-        item_index_attr = "" if item_index is None else str(item_index)
-
-        return f"""
-            <div class="course-card {css_class}" draggable="true"
-                 data-source="{esc(source)}"
-                 data-section-key="{esc(section.section_key)}"
-                 data-session-type="{esc(normalized_session_type)}"
-                 data-source-day="{esc(source_day_attr)}"
-                 data-source-block="{esc(source_block_attr)}"
-                 data-item-index="{esc(item_index_attr)}"
-                 title="{title_attr}"
-                 ondragstart="dragStartHandler(event)"
-                 ondragend="dragEndHandler(event)">
-                <div class="course-card-top">
-                    <span class="course-code">{esc(section.course_code)}</span>
-                    <span class="session-pill">{esc(session_abbreviation(normalized_session_type))}</span>
-                </div>
-                <div class="course-title">{esc(short_text(section.title, 42))}</div>
-                <div class="course-meta">Sec {esc(short_text(section.section_key, 14))} | Prof {esc(short_text(professor, 18))}</div>
-                {reason_html}
-                <div class="course-tooltip">{tooltip_html}</div>
-            </div>
-        """
-
-    unassigned_cards: List[str] = []
-    for section_key, items in sorted(st.session_state.unassigned_blocks.items()):
-        section = section_lookup.get(section_key)
-        if not section or section.plan_comun_level != plan_comun_level:
-            continue
-
-        for item_index, item in enumerate(items):
-            session_type, reason = coerce_unassigned_item(item)
-            unassigned_cards.append(
-                render_course_card(
-                    section=section,
-                    session_type=session_type,
-                    room=section.special_room or "Standard",
-                    source="unassigned",
-                    item_index=item_index,
-                    reason=reason,
-                )
-            )
-
-    parts: List[str] = ["""
-    <style>
-        .dnd-container {
-            font-family: Arial, Helvetica, sans-serif;
-            color: #1f2937;
-            background: #f7f8fa;
-            padding: 12px;
-        }
-
-        .dnd-header {
-            display: flex;
-            align-items: baseline;
-            justify-content: space-between;
-            gap: 12px;
-            margin-bottom: 10px;
-        }
-
-        .dnd-header h3 {
-            margin: 0;
-            font-size: 18px;
-            font-weight: 700;
-        }
-
-        .dnd-count {
-            color: #4b5563;
-            font-size: 12px;
-        }
-
-        .unassigned-bank {
-            background: #fff8e6;
-            border: 1px solid #e5b94f;
-            border-radius: 8px;
-            padding: 10px;
-            margin-bottom: 14px;
-            max-height: 230px;
-            overflow-y: auto;
-            transition: background 0.15s ease, border-color 0.15s ease;
-        }
-
-        .unassigned-bank.drag-over {
-            background: #fff0c2;
-            border-color: #b7791f;
-        }
-
-        .bank-title {
-            display: flex;
-            justify-content: space-between;
-            gap: 12px;
-            margin-bottom: 8px;
-            font-size: 13px;
-            font-weight: 700;
-        }
-
-        .bank-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-            gap: 8px;
-        }
-
-        .empty-bank {
-            color: #6b7280;
-            font-size: 12px;
-            padding: 6px 0;
-        }
-
-        .schedule-wrap {
-            overflow: auto;
-            border: 1px solid #d5dae1;
-            border-radius: 8px;
-            background: white;
-        }
-
-        .schedule-grid {
-            border-collapse: separate;
-            border-spacing: 0;
-            width: 100%;
-            min-width: 880px;
-            background: white;
-        }
-
-        .schedule-grid th,
-        .schedule-grid td {
-            border-right: 1px solid #e5e7eb;
-            border-bottom: 1px solid #e5e7eb;
-            vertical-align: top;
-        }
-
-        .schedule-grid th {
-            position: sticky;
-            top: 0;
-            z-index: 20;
-            background: #243447;
-            color: white;
-            padding: 10px;
-            font-size: 12px;
-            font-weight: 700;
-            text-align: center;
-        }
-
-        .block-label {
-            width: 95px;
-            min-width: 95px;
-            background: #eef1f5;
-            color: #243447;
-            text-align: center;
-            font-weight: 700;
-            padding: 10px 6px;
-        }
-
-        .block-time {
-            margin-top: 4px;
-            color: #4b5563;
-            font-size: 11px;
-            font-weight: 500;
-        }
-
-        .drop-zone {
-            position: relative;
-            width: 18%;
-            min-width: 145px;
-            height: 92px;
-            background: #ffffff;
-            transition: background 0.15s ease, box-shadow 0.15s ease;
-        }
-
-        .drop-zone:hover {
-            background: #f5f9fc;
-        }
-
-        .drop-zone.drag-over {
-            background: #e8f3f7;
-            box-shadow: inset 0 0 0 2px #2f7d95;
-        }
-
-        .cell-stack {
-            min-height: 76px;
-            padding: 6px;
-        }
-
-        .course-card {
-            position: relative;
-            background: #ffffff;
-            border: 1px solid #d9dee7;
-            border-left: 5px solid #245c7a;
-            border-radius: 8px;
-            color: #172033;
-            cursor: move;
-            font-size: 12px;
-            margin-bottom: 6px;
-            padding: 7px 8px;
-            text-align: left;
-            user-select: none;
-            box-shadow: 0 1px 3px rgba(31, 41, 55, 0.12);
-        }
-
-        .course-card.ayudantia {
-            border-left-color: #a16207;
-        }
-
-        .course-card.laboratorio {
-            border-left-color: #2f6b43;
-        }
-
-        .course-card:hover {
-            box-shadow: 0 6px 16px rgba(31, 41, 55, 0.18);
-            z-index: 100;
-        }
-
-        .course-card.dragging {
-            opacity: 0.55;
-        }
-
-        .course-card-top {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 6px;
-            margin-bottom: 3px;
-        }
-
-        .course-code {
-            overflow-wrap: anywhere;
-            font-weight: 700;
-        }
-
-        .session-pill {
-            flex: 0 0 auto;
-            border-radius: 6px;
-            background: #e7edf4;
-            color: #243447;
-            font-size: 10px;
-            font-weight: 700;
-            padding: 2px 5px;
-        }
-
-        .course-title {
-            color: #374151;
-            font-size: 11px;
-            line-height: 1.25;
-            overflow-wrap: anywhere;
-        }
-
-        .course-meta,
-        .course-reason {
-            color: #6b7280;
-            font-size: 10px;
-            line-height: 1.25;
-            margin-top: 4px;
-            overflow-wrap: anywhere;
-        }
-
-        .course-tooltip {
-            display: none;
-            position: absolute;
-            left: calc(100% + 8px);
-            top: 0;
-            width: 280px;
-            max-width: 280px;
-            background: #111827;
-            border-radius: 8px;
-            box-shadow: 0 12px 32px rgba(17, 24, 39, 0.28);
-            color: #f9fafb;
-            font-size: 12px;
-            font-weight: 400;
-            line-height: 1.35;
-            padding: 10px;
-            z-index: 5000;
-        }
-
-        .course-tooltip div + div {
-            margin-top: 5px;
-        }
-
-        .course-tooltip strong {
-            color: #c7d2fe;
-        }
-
-        .course-card:hover .course-tooltip {
-            display: block;
-        }
-    </style>
-    """]
-
-    parts.append(f"""
-    <div class="dnd-container">
-        <div class="dnd-header">
-            <h3>Plan Comun {plan_comun_level}</h3>
-            <div class="dnd-count">{len(unassigned_cards)} unassigned block(s)</div>
-        </div>
-
-        <div class="unassigned-bank"
-             ondragover="event.preventDefault(); this.classList.add('drag-over')"
-             ondragleave="this.classList.remove('drag-over')"
-             ondrop="unassignDropHandler(event, {plan_comun_level})">
-            <div class="bank-title">
-                <span>Unassigned Blocks</span>
-                <span>{len(unassigned_cards)}</span>
-            </div>
-            <div class="bank-grid">
-    """)
-
-    if unassigned_cards:
-        parts.extend(unassigned_cards)
-    else:
-        parts.append('<div class="empty-bank">No unassigned blocks for this level.</div>')
-
-    parts.append("""
-            </div>
-        </div>
-
-        <div class="schedule-wrap">
-            <table class="schedule-grid">
-                <thead>
-                    <tr>
-                        <th class="block-label">Block</th>
-    """)
-
-    for day in days:
-        parts.append(f"<th>{esc(day)}</th>")
-
-    parts.append("""
-                    </tr>
-                </thead>
-                <tbody>
-    """)
-
-    for block_idx in range(13):
-        block = ACADEMIC_BLOCKS[block_idx]
-        parts.append(f"""
-                    <tr>
-                        <td class="block-label">
-                            <div>{block_idx}</div>
-                            <div class="block-time">{esc(block.start_time)}-{esc(block.end_time)}</div>
-                        </td>
-        """)
-
-        for day_idx, _ in enumerate(days):
-            key = (day_idx, block_idx)
-            parts.append(f"""
-                        <td class="drop-zone"
-                            data-day="{day_idx}"
-                            data-block="{block_idx}"
-                            ondragover="event.preventDefault(); this.classList.add('drag-over')"
-                            ondragleave="this.classList.remove('drag-over')"
-                            ondrop="dropHandler(event, {plan_comun_level})">
-                            <div class="cell-stack">
-            """)
-
-            for section_key, session_type, room in st.session_state.schedule_matrix.get(key, []):
-                section = section_lookup.get(section_key)
-                if section and section.plan_comun_level == plan_comun_level:
-                    parts.append(
-                        render_course_card(
-                            section=section,
-                            session_type=session_type,
-                            room=room,
-                            source="scheduled",
-                            source_day=day_idx,
-                            source_block=block_idx,
-                        )
-                    )
-
-            parts.append("""
-                            </div>
-                        </td>
-            """)
-
-        parts.append("</tr>")
-
-    parts.append("""
-                </tbody>
-            </table>
-        </div>
-    </div>
-
-    <script>
-    function dragStartHandler(event) {
-        const card = event.currentTarget;
-        const payload = {
-            source: card.dataset.source,
-            section_key: card.dataset.sectionKey,
-            session_type: card.dataset.sessionType,
-            source_day: card.dataset.sourceDay || null,
-            source_block: card.dataset.sourceBlock || null,
-            item_index: card.dataset.itemIndex || null
-        };
-
-        event.dataTransfer.effectAllowed = 'move';
-        event.dataTransfer.setData('application/json', JSON.stringify(payload));
-        event.dataTransfer.setData('text/plain', JSON.stringify(payload));
-        card.classList.add('dragging');
-    }
-
-    function dragEndHandler(event) {
-        event.currentTarget.classList.remove('dragging');
-    }
-
-    function getDragPayload(event) {
-        const raw = event.dataTransfer.getData('application/json') ||
-            event.dataTransfer.getData('text/plain');
-        if (!raw) {
-            return null;
-        }
-
-        try {
-            return JSON.parse(raw);
-        } catch (error) {
-            return null;
-        }
-    }
-
-    function sendScheduleAction(payload) {
-        payload.nonce = Date.now();
-        const parentWindow = window.parent || window.top;
-        const url = new URL(parentWindow.location.href);
-        url.searchParams.set('schedule_move', JSON.stringify(payload));
-        url.searchParams.set('schedule_move_nonce', String(payload.nonce));
-        parentWindow.location.href = url.toString();
-    }
-
-    function dropHandler(event, planComunLevel) {
-        event.preventDefault();
-        event.currentTarget.classList.remove('drag-over');
-
-        const payload = getDragPayload(event);
-        if (!payload) {
-            return;
-        }
-
-        const targetDay = event.currentTarget.dataset.day;
-        const targetBlock = event.currentTarget.dataset.block;
-        if (
-            payload.source === 'scheduled' &&
-            String(payload.source_day) === String(targetDay) &&
-            String(payload.source_block) === String(targetBlock)
-        ) {
-            return;
-        }
-
-        payload.action = 'move_block';
-        payload.target_day = parseInt(targetDay, 10);
-        payload.target_block = parseInt(targetBlock, 10);
-        payload.plan_comun = planComunLevel;
-        sendScheduleAction(payload);
-    }
-
-    function unassignDropHandler(event, planComunLevel) {
-        event.preventDefault();
-        event.currentTarget.classList.remove('drag-over');
-
-        const payload = getDragPayload(event);
-        if (!payload || payload.source !== 'scheduled') {
-            return;
-        }
-
-        payload.action = 'unassign_block';
-        payload.plan_comun = planComunLevel;
-        sendScheduleAction(payload);
-    }
-    </script>
-    """)
-
-    return "".join(parts)
 
 
 # ============================================================================
@@ -1764,29 +888,55 @@ def render_sidebar() -> None:
     
     # Constraint relaxation framework
     st.sidebar.subheader("Constraint Relaxation")
-    st.sidebar.write("Relax cohort overlap constraints by Plan Común level:")
-    
-    st.session_state.relaxation_flags["plan_comun_1"] = st.sidebar.checkbox(
-        "Relax Plan Común 1",
-        value=st.session_state.relaxation_flags["plan_comun_1"]
+    flags = st.session_state.relaxation_flags
+
+    st.sidebar.markdown("**Disponibilidad de profesores**")
+    flags['relax_availability'] = st.sidebar.checkbox(
+        "Ignorar disponibilidad de profesores",
+        value=flags['relax_availability'],
+        help="Abre los bloques 0–8 de todos los días para todas las secciones, ignorando la disponibilidad declarada.",
     )
-    st.session_state.relaxation_flags["plan_comun_2"] = st.sidebar.checkbox(
-        "Relax Plan Común 2",
-        value=st.session_state.relaxation_flags["plan_comun_2"]
+
+    st.sidebar.markdown("**Restricción de bloques 3-juntas**")
+    relax_3juntas_full = st.sidebar.checkbox(
+        "Permitir cualquier 3 bloques consecutivos en el día",
+        value=flags['relax_3juntas_full'],
+        help="Cursos 3-juntas pueden usar cualquier tripleta consecutiva sin restricción de bloque.",
     )
-    st.session_state.relaxation_flags["plan_comun_3"] = st.sidebar.checkbox(
-        "Relax Plan Común 3",
-        value=st.session_state.relaxation_flags["plan_comun_3"]
+    relax_3juntas_medium = st.sidebar.checkbox(
+        "Permitir cualquier 3 bloques consecutivos dentro de bloques 1–7",
+        value=flags['relax_3juntas_medium'],
+        disabled=relax_3juntas_full,
+        help="Cursos 3-juntas pueden usar cualquier tripleta consecutiva dentro de los bloques 1–7.",
     )
-    st.session_state.relaxation_flags["plan_comun_4"] = st.sidebar.checkbox(
-        "Relax Plan Común 4",
-        value=st.session_state.relaxation_flags["plan_comun_4"]
+    flags['relax_3juntas_full'] = relax_3juntas_full
+    flags['relax_3juntas_medium'] = relax_3juntas_medium and not relax_3juntas_full
+
+    st.sidebar.markdown("**Regla de Bloque 4 (sesión única)**")
+    flags['relax_block4'] = st.sidebar.checkbox(
+        "Permitir sesiones de un bloque en cualquier horario",
+        value=flags['relax_block4'],
+        help="Elimina la regla que obliga a las sesiones de un solo bloque a usar el Bloque 4 (12:30–13:20).",
     )
+
+    st.sidebar.markdown("**Restricción matutina de Ayudantías**")
+    relax_ayudantia_full = st.sidebar.checkbox(
+        "Permitir Ayudantías en cualquier horario",
+        value=flags['relax_ayudantia_full'],
+        help="Elimina toda restricción matutina para las Ayudantías.",
+    )
+    relax_ayudantia_partial = st.sidebar.checkbox(
+        "Permitir Ayudantías desde el bloque 3 (11:30) en adelante",
+        value=flags['relax_ayudantia_partial'],
+        disabled=relax_ayudantia_full,
+        help="Solo los bloques 0–2 (08:30–11:20) quedan prohibidos para Ayudantías.",
+    )
+    flags['relax_ayudantia_full'] = relax_ayudantia_full
+    flags['relax_ayudantia_partial'] = relax_ayudantia_partial and not relax_ayudantia_full
     
     if st.sidebar.button("Regenerate Automated Schedule", key="regen_btn"):
         if st.session_state.sections:
             with st.spinner("Re-optimizing schedule with selected relaxations..."):
-                print("Regenerating schedule with relaxations:", st.session_state.relaxation_flags)
                 scheduler = CourseScheduler(st.session_state.sections, st.session_state.relaxation_flags)
                 scheduled_blocks, conflict_report = scheduler.solve(timeout_seconds=60)
                 
@@ -1804,22 +954,6 @@ def render_sidebar() -> None:
             st.sidebar.warning("No data loaded yet")
 
     render_unassigned_sidebar()
-    return
-    
-    # Unassigned blocks bank
-    st.sidebar.subheader("Unassigned Blocks")
-    if st.session_state.unassigned_blocks:
-        for section_key, reasons in list(st.session_state.unassigned_blocks.items())[:3]:
-            section = next((s for s in st.session_state.sections if s.section_key == section_key), None)
-            if section:
-                with st.sidebar.expander(f"{section.course_code[:15]}...", expanded=False):
-                    for session_type, reason in reasons[:2]:
-                        st.write(f"- **{session_type}**: {reason[:40]}...")
-        
-        if len(st.session_state.unassigned_blocks) > 3:
-            st.sidebar.info(f"... and {len(st.session_state.unassigned_blocks) - 3} more unassigned")
-    else:
-        st.sidebar.success("✓ All courses scheduled!")
 
 
 # ============================================================================
@@ -1827,7 +961,6 @@ def render_sidebar() -> None:
 # ============================================================================
 
 def render_cohort_view(plan_comun_level: int) -> None:
-    print("Rendering cohort")
     if not st.session_state.sections:
         st.info("No data loaded. Use the sidebar to upload a dataset.")
         return
@@ -1842,13 +975,9 @@ def render_cohort_view(plan_comun_level: int) -> None:
     )
 
     if result is not None:
-        print("Received DND result:", result)
         payload = json.loads(result) if isinstance(result, str) else result
-        print("Parsed payload:", payload)
         nonce = payload.get("nonce")
-        print(f"Processing DND result for plan_comun_level {plan_comun_level}, nonce: {nonce}")
         last_nonce_key = f"_last_dnd_nonce_{plan_comun_level}"
-        print(f"Last nonce in session state: {st.session_state.get(last_nonce_key)}")
         if st.session_state.get(last_nonce_key) != payload:
             st.session_state[last_nonce_key] = payload
             success, message = apply_schedule_action(payload)
@@ -1877,61 +1006,54 @@ def render_cohort_view(plan_comun_level: int) -> None:
 
 
 def render_master_view() -> None:
-    """Render master compilation view with all cohorts and concurrent courses."""
+    """Render the interactive master calendar: every scheduled block across all
+    cohorts at once, colored by semester (Plan Común).
+
+    Because all tabs share the same global schedule matrix, dragging a block here
+    is applied by `apply_schedule_action` on the underlying section and therefore
+    shows up automatically on that section's Plan Común tab."""
     st.subheader("Master Academic Calendar - All Courses & Cohorts")
-    
+
     if not st.session_state.sections:
         st.info("No data loaded. Use the sidebar to upload a dataset.")
         return
-    
-    st.write("**Showing all concurrent courses across all cohort levels**")
-    st.info("Cells display multiple courses running in parallel (separated by |).")
-    
-    # Create master grid
-    days = ["LUNES", "MARTES", "MIERCOLES", "JUEVES", "VIERNES"]
-    
-    # Build data for display
-    display_data = []
-    for block_idx in range(13):
-        block = ACADEMIC_BLOCKS[block_idx]
-        row = {"Block": f"{block_idx}\n({block.start_time}-{block.end_time})"}
-        
-        for day_idx, day in enumerate(days):
-            key = (day_idx, block_idx)
-            courses = []
-            if key in st.session_state.schedule_matrix:
-                for section_key, session_type, room in st.session_state.schedule_matrix[key]:
-                    section = next((s for s in st.session_state.sections if s.section_key == section_key), None)
-                    if section:
-                        # Format: CourseCode (PC_Level) SessionType [Room]
-                        course_str = f"{section.course_code[:10]} (PC{section.plan_comun_level}) {session_type[:3]}"
-                        if section.special_room:
-                            course_str += f" [{section.special_room[:15]}]"
-                        courses.append(course_str)
-            
-            # Join multiple courses with newlines for better readability
-            row[day] = "\n".join(courses) if courses else "—"
-        
-        display_data.append(row)
-    
-    df = pd.DataFrame(display_data)
-    
-    # Display with custom styling
-    st.dataframe(
-        df, 
-        use_container_width=True,
-        height=500
+
+    st.write("**Todos los bloques de todos los semestres. Cada Plan Común se distingue por color.**")
+    st.caption(
+        "Puede arrastrar un bloque para reubicarlo; el cambio se refleja también "
+        "en la pestaña del semestre correspondiente."
     )
-    
+
+    result = dnd_grid_component(
+        schedule_matrix=serialize_schedule_matrix(),
+        unassigned_blocks=st.session_state.unassigned_blocks,
+        sections=serialize_sections(),
+        plan_comun_level=0,
+        academic_blocks=serialize_academic_blocks(),
+        master_mode=True,
+        key="dnd_grid_master",
+    )
+
+    if result is not None:
+        payload = json.loads(result) if isinstance(result, str) else result
+        last_nonce_key = "_last_dnd_nonce_master"
+        if st.session_state.get(last_nonce_key) != payload:
+            st.session_state[last_nonce_key] = payload
+            success, message = apply_schedule_action(payload)
+            if success:
+                st.success(message)
+                st.rerun()
+            else:
+                st.error(message)
+
     # Summary statistics
     st.write("### Schedule Summary")
     col1, col2, col3, col4 = st.columns(4)
-    
+
     total_scheduled = sum(len(blocks) for blocks in st.session_state.schedule_matrix.values())
-    total_slots_used = len(st.session_state.schedule_matrix)
     total_sections = len(st.session_state.sections)
     total_required = sum(s.required_clases + s.required_ayudantias + s.required_laboratorios for s in st.session_state.sections)
-    
+
     with col1:
         st.metric("Total Sections", total_sections)
     with col2:
@@ -2065,7 +1187,6 @@ def main():
     
     # Initialize session state
     initialize_session_state()
-    process_pending_drag_drop_action()
     
     # Configure page styling
     st.markdown("""
@@ -2082,7 +1203,6 @@ def main():
     
     st.title("University Course Scheduler MVP")
     st.write("Interactive drag-and-drop scheduling with real-time constraint validation")
-    render_drag_drop_feedback()
     
     # Render sidebar controls
     render_sidebar()

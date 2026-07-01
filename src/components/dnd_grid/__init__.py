@@ -14,6 +14,7 @@ def dnd_grid(
     sections: List[Dict],
     plan_comun_level: int,
     academic_blocks: Optional[Dict] = None,
+    master_mode: bool = False,
     key: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     return _component_func(
@@ -22,6 +23,7 @@ def dnd_grid(
         sections=sections,
         plan_comun_level=plan_comun_level,
         academic_blocks=academic_blocks or {},
+        master_mode=master_mode,
         key=key,
         default=None,
         height=1100,

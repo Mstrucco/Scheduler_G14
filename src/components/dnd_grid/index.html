@@ -27,6 +27,21 @@ body { font-family: Arial, Helvetica, sans-serif; font-size: 12px; color: #1f293
 .course-card { position: relative; background: #ffffff; border: 1px solid #d9dee7; border-left: 5px solid #245c7a; border-radius: 8px; color: #172033; cursor: move; font-size: 12px; margin-bottom: 6px; padding: 7px 8px; text-align: left; user-select: none; box-shadow: 0 1px 3px rgba(31,41,55,.12); transition: box-shadow 0.15s; }
 .course-card.ayudantia { border-left-color: #a16207; }
 .course-card.laboratorio { border-left-color: #2f6b43; }
+/* Master view: color the card by semester (Plan Común). Defined after the
+   session rules so it wins the border-left-color tie when both are present. */
+.course-card.pc-1 { border-left-color: #2563eb; background: #eff5ff; }
+.course-card.pc-2 { border-left-color: #16a34a; background: #edfaf1; }
+.course-card.pc-3 { border-left-color: #d97706; background: #fff7ed; }
+.course-card.pc-4 { border-left-color: #7c3aed; background: #f6f1fe; }
+.pill-group { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+.pc-badge { border-radius: 6px; font-size: 10px; font-weight: 700; padding: 2px 5px; color: #fff; }
+.pc-badge.pc-1 { background: #2563eb; }
+.pc-badge.pc-2 { background: #16a34a; }
+.pc-badge.pc-3 { background: #d97706; }
+.pc-badge.pc-4 { background: #7c3aed; }
+.master-legend { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin-bottom: 12px; padding: 8px 12px; background: #fff; border: 1px solid #d5dae1; border-radius: 8px; }
+.legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: #243447; }
+.legend-swatch { width: 14px; height: 14px; border-radius: 4px; display: inline-block; }
 .course-card:hover { box-shadow: 0 6px 16px rgba(31,41,55,.18); z-index: 100; }
 .course-card.dragging { opacity: 0.5; }
 .course-card-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 3px; }
@@ -34,10 +49,9 @@ body { font-family: Arial, Helvetica, sans-serif; font-size: 12px; color: #1f293
 .session-pill { flex: 0 0 auto; border-radius: 6px; background: #e7edf4; color: #243447; font-size: 10px; font-weight: 700; padding: 2px 5px; }
 .course-title { color: #374151; font-size: 11px; line-height: 1.25; overflow-wrap: anywhere; }
 .course-meta, .course-reason { color: #6b7280; font-size: 10px; margin-top: 4px; overflow-wrap: anywhere; }
-.course-tooltip { display: none; position: absolute; left: calc(100% + 8px); top: 0; width: 260px; background: #111827; border-radius: 8px; box-shadow: 0 12px 32px rgba(17,24,39,.28); color: #f9fafb; font-size: 12px; line-height: 1.35; padding: 10px; z-index: 5000; pointer-events: none; }
+.course-tooltip { display: none; position: fixed; width: 260px; background: #111827; border-radius: 8px; box-shadow: 0 12px 32px rgba(17,24,39,.28); color: #f9fafb; font-size: 12px; line-height: 1.35; padding: 10px; z-index: 9999; pointer-events: none; }
 .course-tooltip div + div { margin-top: 4px; }
 .course-tooltip strong { color: #c7d2fe; }
-.course-card:hover .course-tooltip { display: block; }
 </style>
 </head>
 <body>
@@ -132,7 +146,7 @@ function sessionAbbr(s) {
 }
 
 // ── State ────────────────────────────────────────────────────────────────────
-var STATE = { schedule_matrix:{}, unassigned_blocks:{}, sections:[], plan_comun_level:1, academic_blocks:{} };
+var STATE = { schedule_matrix:{}, unassigned_blocks:{}, sections:[], plan_comun_level:1, academic_blocks:{}, master_mode:false };
 var dragPayload = null;
 
 function sectionForKey(key) {
@@ -152,6 +166,10 @@ function profForSession(section, sessionType) {
 function renderCard(section, sessionType, room, source, sourceDay, sourceBlock, itemIndex, reason) {
   var css = sessionCss(sessionType);
   var abbr = sessionAbbr(sessionType);
+  var level = section.plan_comun_level;
+  var master = STATE.master_mode;
+  var pcClass = master ? " pc-" + level : "";
+  var pcBadge = master ? '<span class="pc-badge pc-' + esc(level) + '">PC' + esc(level) + '</span>' : "";
   var prof = profForSession(section, sessionType);
   var roomL = section.special_room || room || "Standard";
   var tooltipLines = [
@@ -171,16 +189,17 @@ function renderCard(section, sessionType, room, source, sourceDay, sourceBlock, 
   var sd = (sourceDay !== null && sourceDay !== undefined) ? sourceDay : "";
   var sb = (sourceBlock !== null && sourceBlock !== undefined) ? sourceBlock : "";
   var si = (itemIndex !== null && itemIndex !== undefined) ? itemIndex : "";
-  return '<div class="course-card ' + css + '" draggable="true"'
+  return '<div class="course-card ' + css + pcClass + '" draggable="true"'
     + ' data-source="' + esc(source) + '"'
     + ' data-section-key="' + esc(section.section_key) + '"'
     + ' data-session-type="' + esc(normSession(sessionType)) + '"'
+    + ' data-plan-comun="' + esc(level) + '"'
     + ' data-source-day="' + sd + '"'
     + ' data-source-block="' + sb + '"'
     + ' data-item-index="' + si + '">'
     + '<div class="course-card-top">'
     + '<span class="course-code">' + esc(section.course_code) + '</span>'
-    + '<span class="session-pill">' + esc(abbr) + '</span>'
+    + '<span class="pill-group">' + pcBadge + '<span class="session-pill">' + esc(abbr) + '</span></span>'
     + '</div>'
     + '<div class="course-title">' + esc(shortText(section.title, 42)) + '</div>'
     + '<div class="course-meta">Sec ' + esc(shortText(section.section_key, 14)) + ' | Prof ' + esc(shortText(prof, 18)) + '</div>'
@@ -191,6 +210,7 @@ function renderCard(section, sessionType, room, source, sourceDay, sourceBlock, 
 
 // ── Grid builder ──────────────────────────────────────────────────────────────
 function buildGrid() {
+  var master = STATE.master_mode;
   var pcl = STATE.plan_comun_level;
   var days = ["LUNES","MARTES","MIERCOLES","JUEVES","VIERNES"];
   var unassignedCards = [];
@@ -198,7 +218,8 @@ function buildGrid() {
   for (var ki = 0; ki < keys.length; ki++) {
     var sectionKey = keys[ki];
     var section = sectionForKey(sectionKey);
-    if (!section || section.plan_comun_level !== pcl) continue;
+    if (!section) continue;
+    if (!master && section.plan_comun_level !== pcl) continue;
     var items = STATE.unassigned_blocks[sectionKey];
     for (var ii = 0; ii < items.length; ii++) {
       var item = items[ii];
@@ -207,9 +228,10 @@ function buildGrid() {
       unassignedCards.push(renderCard(section, sessionType, section.special_room || "Standard", "unassigned", null, null, ii, reason));
     }
   }
+  var emptyMsg = master ? "No hay bloques sin asignar." : "No unassigned blocks for this level.";
   var bankContent = unassignedCards.length
     ? '<div class="bank-grid">' + unassignedCards.join("") + '</div>'
-    : '<div class="empty-bank">No unassigned blocks for this level.</div>';
+    : '<div class="empty-bank">' + emptyMsg + '</div>';
 
   var blockCount = Object.keys(STATE.academic_blocks).length || 13;
   var rows = "";
@@ -223,7 +245,7 @@ function buildGrid() {
       for (var ci = 0; ci < cellBlocks.length; ci++) {
         var entry = cellBlocks[ci];
         var sec = sectionForKey(entry[0]);
-        if (sec && sec.plan_comun_level === pcl) {
+        if (sec && (master || sec.plan_comun_level === pcl)) {
           cardHtml += renderCard(sec, entry[1], entry[2], "scheduled", dayIdx, blockIdx, null, null);
         }
       }
@@ -234,14 +256,58 @@ function buildGrid() {
   var headers = "";
   for (var di = 0; di < days.length; di++) headers += "<th>" + esc(days[di]) + "</th>";
 
-  return '<div class="dnd-header"><h3>Plan Común ' + pcl + '</h3><div class="dnd-count">' + unassignedCards.length + ' unassigned block(s)</div></div>'
-    + '<div class="unassigned-bank" id="unassigned-bank"><div class="bank-title"><span>Unassigned Blocks</span><span>' + unassignedCards.length + '</span></div>' + bankContent + '</div>'
+  var title = master ? "Vista Maestra — Todos los semestres" : "Plan Común " + pcl;
+  var bankTitle = master ? "Bloques sin asignar (todos los niveles)" : "Unassigned Blocks";
+  var legendHtml = "";
+  if (master) {
+    var pcColors = { "1":"#2563eb", "2":"#16a34a", "3":"#d97706", "4":"#7c3aed" };
+    var li = "";
+    for (var L = 1; L <= 4; L++) {
+      li += '<span class="legend-item"><span class="legend-swatch" style="background:' + pcColors[String(L)] + '"></span>Plan Común ' + L + '</span>';
+    }
+    legendHtml = '<div class="master-legend">' + li + '</div>';
+  }
+
+  return '<div class="dnd-header"><h3>' + esc(title) + '</h3><div class="dnd-count">' + unassignedCards.length + ' unassigned block(s)</div></div>'
+    + legendHtml
+    + '<div class="unassigned-bank" id="unassigned-bank"><div class="bank-title"><span>' + esc(bankTitle) + '</span><span>' + unassignedCards.length + '</span></div>' + bankContent + '</div>'
     + '<div class="schedule-wrap"><table class="schedule-grid"><thead><tr><th class="block-label">Block</th>' + headers + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
 }
 
 // ── Drag and drop ─────────────────────────────────────────────────────────────
 function wireEvents() {
   var root = document.getElementById("dnd-root");
+
+  // Tooltip: position: fixed escapes the overflow:auto scroll container.
+  // Coordinates are set in JS so we can flip left when near the right edge.
+  root.addEventListener("mouseover", function(e) {
+    var card = e.target.closest(".course-card");
+    if (!card) return;
+    var tooltip = card.querySelector(".course-tooltip");
+    if (!tooltip) return;
+    var rect = card.getBoundingClientRect();
+    var gap = 8;
+    var tw  = 260;
+    tooltip.style.top    = Math.min(rect.top, window.innerHeight - 240) + "px";
+    tooltip.style.bottom = "auto";
+    if (rect.right + gap + tw <= window.innerWidth) {
+      tooltip.style.left  = (rect.right + gap) + "px";
+      tooltip.style.right = "auto";
+    } else {
+      tooltip.style.left  = "auto";
+      tooltip.style.right = (window.innerWidth - rect.left + gap) + "px";
+    }
+    tooltip.style.display = "block";
+  });
+
+  root.addEventListener("mouseout", function(e) {
+    var card = e.target.closest(".course-card");
+    if (!card) return;
+    if (card.contains(e.relatedTarget)) return;
+    var tooltip = card.querySelector(".course-tooltip");
+    if (tooltip) tooltip.style.display = "none";
+  });
+
   root.addEventListener("dragstart", function(e) {
     var card = e.target.closest(".course-card");
     if (!card) return;
@@ -249,6 +315,7 @@ function wireEvents() {
       source: card.dataset.source,
       section_key: card.dataset.sectionKey,
       session_type: card.dataset.sessionType,
+      plan_comun: card.dataset.planComun || null,
       source_day: card.dataset.sourceDay || null,
       source_block: card.dataset.sourceBlock || null,
       item_index: card.dataset.itemIndex || null
@@ -277,7 +344,7 @@ function wireEvents() {
     var isBank = !!e.target.closest(".unassigned-bank");
     if (isBank) {
       if (dragPayload.source !== "scheduled") return;
-      Streamlit.setComponentValue(JSON.stringify(Object.assign({}, dragPayload, { action:"unassign_block", plan_comun:STATE.plan_comun_level })));
+      Streamlit.setComponentValue(JSON.stringify(Object.assign({}, dragPayload, { action:"unassign_block", plan_comun:(dragPayload.plan_comun || STATE.plan_comun_level) })));
       return;
     }
     var cell = e.target.closest(".drop-zone");
@@ -291,7 +358,7 @@ function wireEvents() {
       action: "move_block",
       target_day: targetDay,
       target_block: targetBlock,
-      plan_comun: STATE.plan_comun_level
+      plan_comun: (dragPayload.plan_comun || STATE.plan_comun_level)
     })));
   });
 }
@@ -308,6 +375,7 @@ function onRender(event) {
   STATE.sections          = args.sections          || [];
   STATE.plan_comun_level  = args.plan_comun_level  || 1;
   STATE.academic_blocks   = args.academic_blocks   || {};
+  STATE.master_mode       = !!args.master_mode;
   document.getElementById("dnd-root").innerHTML = buildGrid();
   Streamlit.setFrameHeight();
 }
