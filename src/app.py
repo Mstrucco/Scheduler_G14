@@ -32,6 +32,7 @@ from src.models.models import (
     GlobalTimeConstraints,
 )
 from src.components.dnd_grid import dnd_grid as dnd_grid_component
+from src.storage.saver import save_to_json, load_from_json, delete_json_file
 
 # Load the RUT decryption key (EncryptionKey) from the local .env file, if present.
 load_dotenv()
@@ -51,6 +52,17 @@ def _get_rut_cipher() -> Optional[Fernet]:
     except Exception:
         return None
 
+def _encrypt_rut(cipher: Optional[Fernet], value) -> Optional[str]:
+    """Encrypt a professor RUT for anonymization. Falls back to the raw value for
+    placeholders (e.g. UNKNOWN_PROF_1) or when the key is unavailable/invalid."""
+    if value is None:
+        return None
+    if cipher is None:
+        return value
+    try:
+        return cipher.encrypt(str(value).encode()).decode()
+    except Exception:
+        return value
 
 def _decrypt_rut(cipher: Optional[Fernet], value) -> Optional[str]:
     """Decrypt a stored RUT token for display. Falls back to the raw value for
@@ -89,8 +101,31 @@ def serialize_sections() -> list:
             "required_clases":      s.required_clases,
             "required_ayudantias":  s.required_ayudantias,
             "required_laboratorios":s.required_laboratorios,
+            "allowed_slots":      [f"{slot.day.value},{slot.block_index}" for slot in s.allowed_slots],
         })
     return result
+
+def deserialize_sections(data: list) -> list:
+    """Reconstruye los objetos section desde dicts cargados de JSON."""
+    cipher = _get_rut_cipher()
+    sections = []
+    for s in data:
+        section = type('Section', (), {})()  # Crea un objeto vacío
+        section.section_key = s.get("section_key")
+        section.course_code = s.get("course_code")
+        section.title = s.get("title")
+        section.plan_comun_level = s.get("plan_comun_level")
+        section.professor_1_rut = _encrypt_rut(cipher, s.get("professor_1_rut"))
+        section.professor_2_rut = _encrypt_rut(cipher, s.get("professor_2_rut"))
+        section.lab_professor_rut = _encrypt_rut(cipher, s.get("lab_professor_rut"))
+        section.special_room = s.get("special_room")
+        section.class_distribution = s.get("class_distribution")
+        section.required_clases = s.get("required_clases", 0)
+        section.required_ayudantias = s.get("required_ayudantias", 0)
+        section.required_laboratorios = s.get("required_laboratorios", 0)
+        section.allowed_slots = frozenset(TimeSlot(DayOfWeek(int(day)), int(block)) for day, block in (slot.split(",") for slot in s.get("allowed_slots", [])))
+        sections.append(section)
+    return sections
 
 def serialize_academic_blocks() -> dict:
     """Convierte ACADEMIC_BLOCKS a dict serializable."""
@@ -539,6 +574,11 @@ def load_and_schedule_data(file_path: str) -> bool:
             matrix,
             conflict_report,
         )
+        save_to_json({
+            "sections": serialize_sections(),
+            "schedule_matrix": st.session_state.schedule_matrix,
+            "unassigned_blocks": st.session_state.unassigned_blocks
+        }, file_path="schedule_state.json")
         return True
         
     except Exception as e:
@@ -885,6 +925,55 @@ def render_sidebar() -> None:
                     st.sidebar.success("✓ Data loaded and scheduled successfully!")
                 else:
                     st.sidebar.error("✗ Failed to load data")
+    save_file_exists = os.path.exists("./src/storage/schedule_state.json")
+    #Save File Manager
+    if save_file_exists:
+        # Load from saved state
+        if st.sidebar.button(
+            "Load Saved Schedule", 
+            key="load_state_btn", 
+            help="Carga el último estado guardado del horario"
+        ):
+            try:
+                saved_state = load_from_json("schedule_state.json")
+                st.session_state.sections = deserialize_sections(saved_state.get("sections", []))
+                st.session_state.schedule_matrix = saved_state.get("schedule_matrix", {})
+                st.session_state.unassigned_blocks = saved_state.get("unassigned_blocks", {})
+                st.sidebar.success("✓ Loaded saved schedule state!")
+            except Exception as e:
+                st.sidebar.error(f"✗ Failed to load saved state: {str(e)}")
+        
+        # Delete the JSON file
+        if st.sidebar.button(
+            "Delete Save Schedule", 
+            key="delete_json_btn", 
+            help="Borra el archivo de estado guardado del horario"
+        ):
+            try:
+                delete_json_file("schedule_state.json")
+                st.sidebar.success("✓ Saved state deleted!")
+                st.rerun()
+            except Exception as e:
+                st.sidebar.error(f"✗ Failed to delete saved state: {str(e)}")
+    
+    if st.session_state.sections:
+        # Save Current Schedule to a JSON file
+        if st.sidebar.button(
+            "Save Current Schedule", 
+            key="save_state_btn", 
+            help="Guarda el estado actual del horario en un archivo JSON"
+        ):
+            try:
+                save_to_json({
+                    "sections": serialize_sections(),
+                    "schedule_matrix": st.session_state.schedule_matrix,
+                    "unassigned_blocks": st.session_state.unassigned_blocks
+                }, file_path="schedule_state.json")
+                st.sidebar.success("✓ Current schedule state saved!")
+                if not save_file_exists:
+                    st.rerun()
+            except Exception as e:
+                st.sidebar.error(f"✗ Failed to save schedule state: {str(e)}")
     
     # Constraint relaxation framework
     st.sidebar.subheader("Constraint Relaxation")
