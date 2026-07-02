@@ -945,7 +945,7 @@ def render_sidebar() -> None:
         
         # Delete the JSON file
         if st.sidebar.button(
-            "Delete Save Schedule", 
+            "Delete Saved Schedule", 
             key="delete_json_btn", 
             help="Borra el archivo de estado guardado del horario"
         ):

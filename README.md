@@ -16,6 +16,8 @@ Built by **Grupo 14** for the IAA course project.
 - **Six tabs** — one per Plan Común level (1–4), a colour-coded **Master View** that shows
   every semester at once, and a **Validation & Export** tab.
 - **Constraint relaxation** — toggle individual rules from the sidebar and re-optimise.
+- **Saving and Loading Progress** — Save unfinished progress to a local json file and load
+  it to continue working. 
 - **Excel export** — one workbook with a sheet per level plus a master sheet.
 
 ## Requirements
@@ -102,7 +104,8 @@ scheduler-mvp/
     ├── models/models.py       # DayOfWeek, SessionType, TimeSlot, CourseSection,
     │                          #   GlobalTimeConstraints, ACADEMIC_BLOCKS
     ├── solver/scheduler.py    # CP-SAT model (CourseScheduler)
-    └── components/dnd_grid/    # custom drag-and-drop Streamlit component
+    ├── storage/saver.py       # Save File handler to save, load or delete
+    └── components/dnd_grid/   # custom drag-and-drop Streamlit component
 ```
 
 ## Scheduling constraints
@@ -137,6 +140,13 @@ relaxations apply to all semesters at once:
 - **Block 4 rule off** — allow single-block sessions in any slot.
 - **Ayudantías from block 3 (11:30) onward** / **anytime** — relax rule 3.
 
+## Saving and loading
+
+From the sidebar you can save your progress by pressing **Save Current Schedule**.
+You can load your stored progress by pressing **Load Saved Schedule**. This will
+delete any unsaved changes. To delete your stored progress, you must press
+**Delete Saved Schedule**. This will not erase your loaded schedule.
+
 ## How it works
 
 `loader.py` reads the dataset and turns each day's availability string into a set of
@@ -144,7 +154,8 @@ relaxations apply to all semesters at once:
 valid section/session/day/block combination — adds the constraints above and maximises the
 number of scheduled blocks. `src/app.py` renders the result in the drag-and-drop grid;
 edits update a single shared schedule matrix that every tab, including the Master View,
-reads from.
+reads from. `saver.py` saves the current state of the schedule as a serialized json 
+dictionary and stores it in a file called `schedule_state.json`.
 
 ## Authors
 
