@@ -144,7 +144,8 @@ dataset further restricts where each section can be placed.
 From the sidebar you can relax rules and press **Regenerate Automated Schedule**;
 relaxations apply to all semesters at once:
 
-- **Ignore professor availability** — open blocks 0–8 every day.
+- **Expand professor availability** — adds blocks 0–8 of every day *on top of* each
+  professor's declared availability (declared slots, including evening blocks, are kept).
 - **3-juntas within blocks 1–7** / **any three consecutive blocks** — widen rule 6.
 - **Block 4 rule off** — single-block days may use any slot (relaxes rule 5's position).
 - **Ayudantías from block 3 (11:30) onward** / **anytime** — relax rule 3.

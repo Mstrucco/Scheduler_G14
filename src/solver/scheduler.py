@@ -60,7 +60,8 @@ class CourseScheduler:
         Args:
             sections: List of CourseSection objects to schedule
             relaxation_flags: Dict of relaxation options (all default to False):
-                - 'relax_availability'        : ignore professor declared availability (all semesters)
+                - 'relax_availability'        : ADD blocks 0–8 of every day to each professor's
+                                                declared availability (declared slots are kept)
                 - 'relax_3juntas_medium'      : allow 3-juntas in any consecutive 3 blocks within 1–7
                 - 'relax_3juntas_full'        : allow 3-juntas in any consecutive 3 blocks in the day
                 - 'relax_block4'              : single-block sessions can use any slot (not just block 4)
@@ -155,6 +156,15 @@ class CourseScheduler:
         flags = self._relaxation_flags
         forbidden_ayudantia = self._get_forbidden_ayudantia_blocks()
 
+        # Availability relaxation ADDS blocks 0–8 of every day on top of the
+        # professor's declared availability (it must never replace it: some
+        # professors declare evening blocks 9+ that would otherwise be lost).
+        relaxation_slots = None
+        if flags.get('relax_availability'):
+            relaxation_slots = create_professor_available_slots({
+                day: frozenset(range(9)) for day in DayOfWeek
+            })
+
         for section in self.sections:
             section_key = section.section_key
             plan_level = section.plan_comun_level
@@ -170,16 +180,10 @@ class CourseScheduler:
                 if required_blocks == 0:
                     continue
 
-                # Determine candidate slots (professor availability or relaxed)
-                if flags.get('relax_availability'):
-                    relaxed_avail = {
-                        DayOfWeek.LUNES:     frozenset(range(9)),
-                        DayOfWeek.MARTES:    frozenset(range(9)),
-                        DayOfWeek.MIERCOLES: frozenset(range(9)),
-                        DayOfWeek.JUEVES:    frozenset(range(9)),
-                        DayOfWeek.VIERNES:   frozenset(range(9)),
-                    }
-                    available_slots = create_professor_available_slots(relaxed_avail)
+                # Candidate slots: declared availability, plus the extra
+                # blocks when the availability relaxation is enabled
+                if relaxation_slots is not None:
+                    available_slots = frozenset(section.allowed_slots) | relaxation_slots
                 else:
                     available_slots = section.allowed_slots
 

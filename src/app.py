@@ -632,6 +632,10 @@ def validate_schedule() -> Dict:
         violation.update(fields)
         report["violations"].append(violation)
 
+    # With the availability relaxation, blocks 0–8 of every day count as
+    # available for every professor IN ADDITION to their declared slots.
+    relax_availability = st.session_state.relaxation_flags.get('relax_availability', False)
+
     for (day_val, block_idx), blocks in st.session_state.schedule_matrix.items():
         report["stats"]["total_slots_used"] += 1
         report["stats"]["scheduled_blocks"] += len(blocks)
@@ -688,7 +692,7 @@ def validate_schedule() -> Dict:
                     session_type=normalized_session_type,
                 )
 
-            if slot not in section.allowed_slots:
+            if slot not in section.allowed_slots and not (relax_availability and block_idx < 9):
                 add_violation(
                     "PROFESSOR_AVAILABILITY",
                     f"{section.course_code} is scheduled outside the professor's allowed slots",
@@ -1042,9 +1046,10 @@ def render_sidebar() -> None:
 
     st.sidebar.markdown("**Disponibilidad de profesores**")
     flags['relax_availability'] = st.sidebar.checkbox(
-        "Ignorar disponibilidad de profesores",
+        "Ampliar disponibilidad de profesores",
         value=flags['relax_availability'],
-        help="Abre los bloques 0–8 de todos los días para todas las secciones, ignorando la disponibilidad declarada.",
+        help="Agrega los bloques 0–8 de todos los días a la disponibilidad declarada de cada profesor. "
+             "La disponibilidad declarada se mantiene (incluidos los bloques de la tarde).",
     )
 
     st.sidebar.markdown("**Restricción de bloques 3-juntas**")
