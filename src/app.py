@@ -1,5 +1,5 @@
 """
-Comprehensive Streamlit UI for University Course Scheduler MVP
+Comprehensive Streamlit UI for University Course Scheduler
 
 Features:
 - Interactive drag-and-drop schedule matrix
@@ -1268,7 +1268,7 @@ def render_export_section() -> None:
 def main():
     """Main application entry point."""
     st.set_page_config(
-        page_title="University Scheduler MVP",
+        page_title="University Scheduler",
         page_icon="📅",
         layout="wide",
         initial_sidebar_state="expanded"
@@ -1290,7 +1290,7 @@ def main():
     </style>
     """, unsafe_allow_html=True)
     
-    st.title("University Course Scheduler MVP")
+    st.title("University Course Scheduler")
     st.write("Interactive drag-and-drop scheduling with real-time constraint validation")
     
     # Render sidebar controls

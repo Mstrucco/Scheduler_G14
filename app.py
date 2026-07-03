@@ -1,5 +1,5 @@
 """
-University Course Scheduler MVP - Streamlit Frontend
+University Course Scheduler - Streamlit Frontend
 Entry point for the application.
 """
 
