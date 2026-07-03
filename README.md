@@ -1,4 +1,4 @@
-# University Scheduler MVP 📅
+# University Scheduler
 
 Constraint-based course scheduler for Chilean universities' *Plan Común* (semesters 1–4).
 It ingests a course dataset, builds a conflict-free timetable with Google OR-Tools'
