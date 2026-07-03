@@ -39,7 +39,7 @@ immediately. The app opens at <http://localhost:8501>.
 ### Manual (any OS)
 
 ```bash
-cd scheduler-mvp
+cd scheduler
 python -m venv .venv
 # Windows:        .venv\Scripts\activate
 # macOS / Linux:  source .venv/bin/activate
@@ -90,14 +90,13 @@ Times map to the 13 academic blocks (08:30–21:20); leading zeros are optional
 ## Project structure
 
 ```
-scheduler-mvp/
+scheduler/
 ├── iniciar_scheduler.bat      # Windows one-click launcher
 ├── app.py                     # entry point (imports src.app.main)
 ├── requirements.txt
-├── .env.example               # template for the RUT decryption key (committed)
-├── .env                       # RUT decryption key (gitignored; the .bat creates it)
-├── data/
-│   └── sample_courses.xlsx    # sample dataset (56 sections)
+├── .env.example               # template for the RUT decryption key
+├── .env                       # RUT decryption key (the .bat creates it, but it 
+│                              # must be created manually for first manual start)
 └── src/
     ├── app.py                 # Streamlit UI: tabs, sidebar, validation, export
     ├── data/loader.py         # Excel/CSV ingestion + availability parsing
