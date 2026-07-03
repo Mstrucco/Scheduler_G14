@@ -90,7 +90,7 @@ Times map to the 13 academic blocks (08:30–21:20); leading zeros are optional
 ## Project structure
 
 ```
-scheduler/
+scheduler_G14/
 ├── iniciar_scheduler.bat      # Windows one-click launcher
 ├── app.py                     # entry point (imports src.app.main)
 ├── requirements.txt
@@ -158,4 +158,4 @@ dictionary and stores it in a file called `schedule_state.json`.
 
 ## Authors
 
-**Grupo 14** — IAA Project. Repository: `Mstrucco/Proyect_IAA_G14`.
+**Grupo 14** — Scheduler_G14. Repository: `Mstrucco/Scheduler_G14`.
