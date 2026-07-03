@@ -17,7 +17,7 @@ Built by **Grupo 14** for the IAA course project.
   every semester at once, and a **Validation & Export** tab.
 - **Constraint relaxation** — toggle individual rules from the sidebar and re-optimise.
 - **Saving and Loading Progress** — Save unfinished progress to a local json file and load
-  it to continue working. 
+  it to continue working.
 - **Excel export** — one workbook with a sheet per level plus a master sheet.
 
 ## Requirements
@@ -34,7 +34,7 @@ Dependencies (`requirements.txt`): `streamlit`, `pandas`, `openpyxl`, `ortools`,
 
 Double-click **`iniciar_scheduler.bat`**. On the first run it creates a virtual
 environment, installs the dependencies and launches the app; later runs start
-immediately. The app opens at <http://localhost:8501>.
+immediately. The app opens at [http://localhost:8501](http://localhost:8501).
 
 ### Manual (any OS)
 
@@ -47,8 +47,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-The app starts empty — use the sidebar to upload a course file (for example the bundled
-`data/sample_courses.xlsx`), then press **Load and Schedule**.
+The app starts empty — use the sidebar to upload a course file, then press **Load and Schedule**.
 
 ## Professor RUT encryption (`.env`)
 
@@ -72,20 +71,20 @@ light obfuscation, not strong security: anyone with the key and the data can rec
 
 Excel/CSV with one row per course section and these columns:
 
-| Column | Meaning |
-|--------|---------|
-| `LLAVE Código- sec` | Unique section key |
-| `CODIGO` | Course code |
-| `TITULO` | Course title |
-| `Plan Común` | Semester level (1–4) |
-| `Clases` / `Ayudantías` / `Laboratorios o Talleres` | Sessions required per week |
-| `Sala especial` | Special room requirement (optional) |
-| `2+1 o 3? (distribución horario de clases)` | Class distribution (`2+1`, `3-juntas`, …) |
-| `RUT PROFESOR 1` / `2` / `LABT` | Encrypted professor identifiers |
-| `LUNES` … `VIERNES` | Availability, e.g. `08:30-09:20, 10:30-11:20` |
+| Column                                                     | Meaning                                        |
+| ---------------------------------------------------------- | ---------------------------------------------- |
+| `LLAVE Código- sec`                                     | Unique section key                             |
+| `CODIGO`                                                 | Course code                                    |
+| `TITULO`                                                 | Course title                                   |
+| `Plan Común`                                            | Semester level (1–4)                          |
+| `Clases` / `Ayudantías` / `Laboratorios o Talleres` | Sessions required per week                     |
+| `Sala especial`                                          | Special room requirement (optional)            |
+| `2+1 o 3? (distribución horario de clases)`             | Class distribution (`2+1`, `3-juntas`, …) |
+| `RUT PROFESOR 1` / `2` / `LABT`                      | Encrypted professor identifiers                |
+| `LUNES` … `VIERNES`                                   | Availability, e.g.`08:30-09:20, 10:30-11:20` |
 
 Times map to the 13 academic blocks (08:30–21:20); leading zeros are optional
-(`8:30` → `08:30`). A sample dataset with 56 sections lives at `data/sample_courses.xlsx`.
+(`8:30` → `08:30`).
 
 ## Project structure
 
@@ -117,14 +116,25 @@ scheduler_G14/
 
 **Structural rules** (CP-SAT):
 
-4. A single-block session must land on Block 4 (12:30–13:20).
-5. `3-juntas` courses need three consecutive blocks, restricted to {2,3,4} or {4,5,6}.
+4. Sessions are scheduled as **pairs of two consecutive blocks**: per day, a section's
+   session type carries either one consecutive pair or nothing. A 4-module course
+   therefore lands as 2 pairs on 2 different days ("2 bloques de dos").
+5. An odd required count allows exactly **one single-block day**, and that lone block
+   must sit at Block 4 (12:30–13:20). This covers 1-block sessions and the "+1" of
+   `2+1` distributions (pair one day + Block-4 single another day).
+6. `3-juntas` courses place their lectures as **one consecutive triple on a single
+   day**, restricted to {2,3,4} or {4,5,6}; lectures beyond the 3 (e.g. a 4-module
+   3-juntas course) follow the single-block rule above.
+7. A section's Clases, Ayudantías and Laboratorios must fall on **different days**
+   (per section — other sections of the same course are independent).
 
 **Resource rules** (CP-SAT, hard):
 
-6. No professor teaches two sessions in the same slot.
-7. No special room hosts two sessions in the same slot.
-8. The same course code is never scheduled twice in one slot (different courses *may* run in parallel).
+8. No professor teaches two sessions in the same slot.
+9. No special room hosts two sessions in the same slot.
+10. **Semester exclusivity**: within a Plan Común level, only one course may occupy a
+    given time slot. Parallel sections of the *same* course are the exception — they
+    may share the slot.
 
 The objective maximises the number of scheduled blocks. Professor availability from the
 dataset further restricts where each section can be placed.
@@ -135,9 +145,12 @@ From the sidebar you can relax rules and press **Regenerate Automated Schedule**
 relaxations apply to all semesters at once:
 
 - **Ignore professor availability** — open blocks 0–8 every day.
-- **3-juntas within blocks 1–7** / **any three consecutive blocks** — widen rule 5.
-- **Block 4 rule off** — allow single-block sessions in any slot.
+- **3-juntas within blocks 1–7** / **any three consecutive blocks** — widen rule 6.
+- **Block 4 rule off** — single-block days may use any slot (relaxes rule 5's position).
 - **Ayudantías from block 3 (11:30) onward** / **anytime** — relax rule 3.
+- **Session types on the same day** — three independent toggles relax rule 7 per pair:
+  Clases + Ayudantías, Clases + Laboratorios, Ayudantías + Laboratorios. Enabling all
+  three removes the rule entirely.
 
 ## Saving and loading
 
@@ -153,7 +166,7 @@ delete any unsaved changes. To delete your stored progress, you must press
 valid section/session/day/block combination — adds the constraints above and maximises the
 number of scheduled blocks. `src/app.py` renders the result in the drag-and-drop grid;
 edits update a single shared schedule matrix that every tab, including the Master View,
-reads from. `saver.py` saves the current state of the schedule as a serialized json 
+reads from. `saver.py` saves the current state of the schedule as a serialized json
 dictionary and stores it in a file called `schedule_state.json`.
 
 ## Authors

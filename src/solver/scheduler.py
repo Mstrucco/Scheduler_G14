@@ -5,14 +5,20 @@ Implements a production-grade course scheduler that solves all Plan Común cohor
 levels (1, 2, 3, 4) simultaneously while respecting:
 - Professor availability and multi-booking protection
 - Special room requirements and capacity
-- Cohort-level time conflicts
+- Semester exclusivity (one course per slot per level; parallel sections of the
+  same course may share a slot)
 - Chilean institutional time constraints
-- Distribution rules (2+1, 3-in-a-row)
+- Consecutive-pair scheduling (sessions land as pairs of 2 consecutive blocks;
+  odd counts get one single at Block 4 — the "2+1" layout)
+- Session-type/day separation (a section's Clases, Ayudantías and Labs fall on
+  different days)
+- 3-juntas distribution (one consecutive lecture triple per week)
 """
 
 import logging
 from typing import Dict, List, Tuple, Set, Optional
 from collections import defaultdict
+from itertools import combinations
 
 from ortools.sat.python import cp_model
 
@@ -30,6 +36,15 @@ from ..models.models import (
 logger = logging.getLogger(__name__)
 
 
+# Maps each session-type pair to the relaxation flag that allows the pair to
+# share a day. Used by the solver and mirrored by the app-side validator.
+SAME_DAY_RELAX_FLAGS: Dict[frozenset, str] = {
+    frozenset({SessionType.CLASE.value, SessionType.AYUDANTIA.value}): 'relax_same_day_clase_ayud',
+    frozenset({SessionType.CLASE.value, SessionType.LABORATORIO.value}): 'relax_same_day_clase_lab',
+    frozenset({SessionType.AYUDANTIA.value, SessionType.LABORATORIO.value}): 'relax_same_day_ayud_lab',
+}
+
+
 class CourseScheduler:
     """
     Constraint satisfaction solver for university course scheduling.
@@ -45,12 +60,15 @@ class CourseScheduler:
         Args:
             sections: List of CourseSection objects to schedule
             relaxation_flags: Dict of relaxation options (all default to False):
-                - 'relax_availability'     : ignore professor declared availability (all semesters)
-                - 'relax_3juntas_medium'   : allow 3-juntas in any consecutive 3 blocks within 1–7
-                - 'relax_3juntas_full'     : allow 3-juntas in any consecutive 3 blocks in the day
-                - 'relax_block4'           : single-block sessions can use any slot (not just block 4)
-                - 'relax_ayudantia_partial': only blocks 0–2 forbidden for Ayudantías
-                - 'relax_ayudantia_full'   : no morning restriction for Ayudantías
+                - 'relax_availability'        : ignore professor declared availability (all semesters)
+                - 'relax_3juntas_medium'      : allow 3-juntas in any consecutive 3 blocks within 1–7
+                - 'relax_3juntas_full'        : allow 3-juntas in any consecutive 3 blocks in the day
+                - 'relax_block4'              : single-block sessions can use any slot (not just block 4)
+                - 'relax_ayudantia_partial'   : only blocks 0–2 forbidden for Ayudantías
+                - 'relax_ayudantia_full'      : no morning restriction for Ayudantías
+                - 'relax_same_day_clase_ayud' : a section may hold Clases and Ayudantías the same day
+                - 'relax_same_day_clase_lab'  : a section may hold Clases and Laboratorios the same day
+                - 'relax_same_day_ayud_lab'   : a section may hold Ayudantías and Laboratorios the same day
         """
         self.sections = sections
         self.model = cp_model.CpModel()
@@ -63,6 +81,9 @@ class CourseScheduler:
             'relax_block4': False,
             'relax_ayudantia_partial': False,
             'relax_ayudantia_full': False,
+            'relax_same_day_clase_ayud': False,
+            'relax_same_day_clase_lab': False,
+            'relax_same_day_ayud_lab': False,
         }
         if relaxation_flags:
             self._relaxation_flags.update(relaxation_flags)
@@ -85,12 +106,16 @@ class CourseScheduler:
         self._add_professor_constraints()
         self._add_room_constraints()
         self._add_cohort_constraints()
-        
+
         # 4. Add Chilean institutional rules
         self._add_block4_constraint()
         self._add_contiguous_blocks_constraint()
-        
-        # 5. Set maximization objective
+
+        # 5. Add structural distribution rules
+        self._add_session_type_day_separation()
+        self._add_session_pattern_constraints()
+
+        # 6. Set maximization objective
         self._set_objective()
     
     # ------------------------------------------------------------------
@@ -271,33 +296,35 @@ class CourseScheduler:
     
     def _add_cohort_constraints(self) -> None:
         """
-        Add cohort-level non-overlap constraints (Plan Común).
-        
-        CORRECTED INTERPRETATION: At any given time slot, multiple courses from 
-        the SAME cohort level CAN run in parallel. However, they must not be 
-        sections of the SAME course code at the SAME time.
-        
-        This constraint prevents the same course from being double-scheduled,
-        not preventing parallel execution of different courses.
+        Add semester (Plan Común) exclusivity constraints.
+
+        At any given time slot, only ONE course per cohort level may hold
+        sessions. The exception is parallel sections of the SAME course code:
+        students belong to a single section, so different sections of one
+        course may share a slot. Two DIFFERENT courses of the same semester
+        may never share a slot.
         """
-        # Group by (plan_comun_level, course_code, day, block_index)
-        # This ensures the same course isn't scheduled twice at the same time
-        course_blocks = defaultdict(list)
-        
+        section_lookup = {s.section_key: s for s in self.sections}
+
+        # Group variables by (level, course_code, day, block_index)
+        course_slot_vars = defaultdict(list)
         for (section_key, session_type, day, block_index), var in self.vars.items():
-            section = next(s for s in self.sections if s.section_key == section_key)
-            
-            # Key: course code + day + block (same course can't be at same time)
-            key = (section.course_code, day, block_index)
-            course_blocks[key].append(var)
-        
-        # For each course/day/block, at most all its required sessions can be scheduled
-        # (no double-scheduling of same course)
-        for key, vars_list in course_blocks.items():
-            if len(vars_list) > 1:
-                # Multiple sessions of same course at same time - allow max 1
-                # (one session type per slot, e.g., either Clase OR Ayudantia, not both)
-                self.model.Add(sum(vars_list) <= 1)
+            section = section_lookup[section_key]
+            key = (section.plan_comun_level, section.course_code, day, block_index)
+            course_slot_vars[key].append(var)
+
+        # One "course occupies this slot" indicator per course per slot;
+        # then at most one active course per (level, day, block).
+        slot_course_indicators = defaultdict(list)
+        for (level, course_code, day, block_index), vars_list in course_slot_vars.items():
+            indicator = self.model.NewBoolVar(f"course_at_{level}_{course_code}_{day}_{block_index}")
+            for var in vars_list:
+                self.model.AddImplication(var, indicator)
+            slot_course_indicators[(level, day, block_index)].append(indicator)
+
+        for key, indicators in slot_course_indicators.items():
+            if len(indicators) > 1:
+                self.model.Add(sum(indicators) <= 1)
     
     def _add_block4_constraint(self) -> None:
         """
@@ -334,7 +361,8 @@ class CourseScheduler:
                             self.model.Add(var == 0)
             
             # Rule 2: "2+1" distribution single-lecture enforcement
-            if section.class_distribution == "2+1":
+            # (matches "2+1", "2+1-separadas", … — same family as the validator)
+            if (section.class_distribution or "").strip().lower().startswith("2+1"):
                 # For each day, if any non-4 block is active, then total must be >= 2
                 for day_enum in DayOfWeek:
                     day_val = day_enum.value
@@ -363,24 +391,31 @@ class CourseScheduler:
         """
         Add contiguous block allocation rule for "3-juntas" distribution.
 
-        If a section has "3-juntas" (3 lectures together):
-        - All 3 blocks must occur on the same day
-        - All 3 blocks must be consecutive
-        - Fixed case (no relaxation): only triplets {2,3,4} or {4,5,6} are valid.
-          Variables for blocks outside 2–6 are never created, and an extra
-          constraint (x₃ ≤ x₂) prevents the otherwise-legal {3,4,5} triplet.
+        For a section with "3-juntas" lectures:
+        - Exactly ONE day carries 3 CONSECUTIVE lecture blocks (the "juntas").
+        - Lectures beyond the 3 (e.g. required_clases = 4) follow the
+          single-block rule: at most (required - 3) single-block days, each
+          at Block 4 unless 'relax_block4' is enabled.
+        - Fixed case (no relaxation): only triplets {2,3,4} or {4,5,6} are
+          valid. Variables outside blocks 2–6 are never created, and an
+          extra constraint (x₃ ≤ x₂) prevents the otherwise-legal {3,4,5}.
         - Relaxation B: any consecutive triplet within blocks 1–7
-        - Relaxation C: any consecutive triplet in the day (no block restriction)
+        - Relaxation C: any consecutive triplet in the day (no restriction)
         """
         flags = self._relaxation_flags
         # 'restrict_start' is True in the fixed case: only start blocks 2 or 4 allowed
         restrict_start = not (flags.get('relax_3juntas_medium') or flags.get('relax_3juntas_full'))
+        relax_block4 = flags.get('relax_block4', False)
 
         for section in self.sections:
             if section.class_distribution != "3-juntas":
                 continue
 
             section_key = section.section_key
+            singles_budget = max(0, section.required_clases - 3)
+
+            triple_day_vars = []
+            single_day_vars = []
 
             for day_enum in DayOfWeek:
                 day_val = day_enum.value
@@ -390,25 +425,45 @@ class CourseScheduler:
                     if sk == section_key and st == SessionType.CLASE.value and day == day_val
                 }
 
-                if len(day_vars) < 3:
+                if not day_vars:
                     continue
 
-                # Gap-filling: if b and b+2 are both active, b+1 must be active
+                # Daily count = 3·triple + single ∈ {0, 1, 3}
+                is_triple = self.model.NewBoolVar(f"3j_triple_{section_key}_{day_val}")
+                is_single = self.model.NewBoolVar(f"3j_single_{section_key}_{day_val}")
+                self.model.Add(is_triple + is_single <= 1)
+                self.model.Add(sum(day_vars.values()) == 3 * is_triple + is_single)
+
+                # A day with fewer than 3 available blocks can never host the triple
+                if len(day_vars) < 3:
+                    self.model.Add(is_triple == 0)
+
+                blocks_sorted = sorted(day_vars)
+
+                # Consecutiveness of the triple:
+                # (a) no two active blocks more than 2 apart
+                for i, block_a in enumerate(blocks_sorted):
+                    for block_b in blocks_sorted[i + 1:]:
+                        if block_b > block_a + 2:
+                            self.model.Add(day_vars[block_a] + day_vars[block_b] <= 1)
+
+                # (b) if b and b+2 are both active, b+1 must be active too;
+                #     if b+1 has no variable, b and b+2 cannot combine at all
                 for start_block in range(11):
                     b0 = day_vars.get(start_block)
                     b1 = day_vars.get(start_block + 1)
                     b2 = day_vars.get(start_block + 2)
+                    if b0 is not None and b2 is not None:
+                        if b1 is not None:
+                            self.model.Add(b1 >= b0 + b2 - 1)
+                        else:
+                            self.model.Add(b0 + b2 <= 1)
 
-                    if b0 is not None and b1 is not None and b2 is not None:
-                        self.model.Add(b1 >= b0 + b2 - 1)
-
-                # Exactly 3 active on this day (or 0)
-                active_vars = list(day_vars.values())
-                if active_vars:
-                    total = self.model.NewIntVar(0, 3, f"3juntas_day_{section_key}_{day_val}_total")
-                    self.model.Add(total == sum(active_vars))
-                    for var in active_vars:
-                        self.model.Add(total == 3).OnlyEnforceIf(var)
+                # A lone lecture (single day) may only sit at Block 4
+                if not relax_block4:
+                    for block, var in day_vars.items():
+                        if block != 4:
+                            self.model.Add(var <= is_triple)
 
                 # Fixed case: prevent triplet {3,4,5}
                 # (variables are already restricted to blocks 2–6, so the only
@@ -418,7 +473,135 @@ class CourseScheduler:
                     x3 = day_vars.get(3)
                     if x2 is not None and x3 is not None:
                         self.model.Add(x3 <= x2)
-    
+
+                triple_day_vars.append(is_triple)
+                single_day_vars.append(is_single)
+
+            # One triple day at most; extra singles only within budget
+            if triple_day_vars:
+                self.model.Add(sum(triple_day_vars) <= 1)
+            if single_day_vars:
+                self.model.Add(sum(single_day_vars) <= singles_budget)
+
+    def _add_session_type_day_separation(self) -> None:
+        """
+        A section's Clases, Ayudantías and Laboratorios must fall on
+        DIFFERENT days: no two session types of the same section may share
+        a day.
+
+        Applies per section — other sections of the same course are
+        independent (their students are different groups).
+
+        Each type pair can be relaxed individually through the flags in
+        SAME_DAY_RELAX_FLAGS (e.g. 'relax_same_day_clase_ayud' lets Clases
+        and Ayudantías coexist on a day). With all three flags enabled the
+        rule disappears entirely.
+        """
+        flags = self._relaxation_flags
+
+        # (section_key, day) -> {session_type: [vars]}
+        day_type_vars = defaultdict(lambda: defaultdict(list))
+        for (section_key, session_type, day, block_index), var in self.vars.items():
+            day_type_vars[(section_key, day)][session_type].append(var)
+
+        for (section_key, day), type_vars in day_type_vars.items():
+            if len(type_vars) < 2:
+                continue
+
+            # Type pairs that must stay on different days (pair not relaxed)
+            enforced_pairs = [
+                pair for pair in combinations(sorted(type_vars), 2)
+                if not flags.get(SAME_DAY_RELAX_FLAGS.get(frozenset(pair), ''), False)
+            ]
+            if not enforced_pairs:
+                continue
+
+            indicators: Dict[str, cp_model.IntVar] = {}
+            for session_type in {t for pair in enforced_pairs for t in pair}:
+                indicator = self.model.NewBoolVar(f"type_on_day_{section_key}_{session_type}_{day}")
+                for var in type_vars[session_type]:
+                    self.model.AddImplication(var, indicator)
+                indicators[session_type] = indicator
+
+            for type_a, type_b in enforced_pairs:
+                self.model.Add(indicators[type_a] + indicators[type_b] <= 1)
+
+    def _add_session_pattern_constraints(self) -> None:
+        """
+        Sessions must be scheduled as pairs of two CONSECUTIVE blocks.
+
+        For every (section, session type), the blocks placed on one day must
+        form either a consecutive pair {b, b+1} or — only when the weekly
+        required count is odd — one single block, which must sit at Block 4
+        (12:30–13:20) unless 'relax_block4' is enabled. At most one such
+        single day is allowed per session type.
+
+        Consequences:
+        - required = 2 -> one pair on one day
+        - required = 4 -> two pairs on two different days ("2 bloques de dos")
+        - required = 3 ("2+1" or no distribution) -> one pair + one single
+          at Block 4 — exactly the "2+1" layout
+        - required = 1 -> one single at Block 4
+
+        Exempt: Clases with '3-juntas' -> _add_contiguous_blocks_constraint
+        (one consecutive triple; any remainder handled there as singles).
+        """
+        relax_block4 = self._relaxation_flags.get('relax_block4', False)
+
+        for section in self.sections:
+            section_key = section.section_key
+            distribution = (section.class_distribution or "").strip().lower()
+
+            for session_type_enum in [SessionType.CLASE, SessionType.AYUDANTIA, SessionType.LABORATORIO]:
+                if session_type_enum == SessionType.CLASE:
+                    required_blocks = section.required_clases
+                    if distribution == "3-juntas":
+                        continue
+                elif session_type_enum == SessionType.AYUDANTIA:
+                    required_blocks = section.required_ayudantias
+                else:
+                    required_blocks = section.required_laboratorios
+
+                if required_blocks == 0:
+                    continue
+
+                single_day_terms = []
+                for day_enum in DayOfWeek:
+                    day_val = day_enum.value
+                    day_vars = {
+                        block: var for (sk, st, day, block), var in self.vars.items()
+                        if sk == section_key and st == session_type_enum.value and day == day_val
+                    }
+                    if not day_vars:
+                        continue
+
+                    # ge1 = "at least 1 block today", ge2 = "2 blocks today"
+                    # -> daily count = ge1 + ge2, capped at 2 by construction
+                    ge1 = self.model.NewBoolVar(f"ge1_{section_key}_{session_type_enum.value}_{day_val}")
+                    ge2 = self.model.NewBoolVar(f"ge2_{section_key}_{session_type_enum.value}_{day_val}")
+                    self.model.Add(ge2 <= ge1)
+                    self.model.Add(sum(day_vars.values()) == ge1 + ge2)
+
+                    # Two blocks on the same day must be consecutive:
+                    # forbid every non-adjacent combination.
+                    blocks_sorted = sorted(day_vars)
+                    for i, block_a in enumerate(blocks_sorted):
+                        for block_b in blocks_sorted[i + 1:]:
+                            if block_b > block_a + 1:
+                                self.model.Add(day_vars[block_a] + day_vars[block_b] <= 1)
+
+                    # A lone block on a day (ge2 = 0) may only sit at Block 4
+                    if not relax_block4:
+                        for block, var in day_vars.items():
+                            if block != 4:
+                                self.model.Add(var <= ge2)
+
+                    single_day_terms.append(ge1 - ge2)
+
+                # Single-block days: at most one, and only when required is odd
+                if single_day_terms:
+                    self.model.Add(sum(single_day_terms) <= required_blocks % 2)
+
     def _set_objective(self) -> None:
         """Set the optimization objective: maximize total scheduled blocks."""
         if self.vars:

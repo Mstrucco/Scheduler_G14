@@ -13,7 +13,8 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Tuple
+from itertools import combinations
+from typing import Any, Dict, List, Optional, Set, Tuple
 import json
 import os
 import html as html_utils
@@ -23,7 +24,7 @@ from dotenv import load_dotenv
 
 # Local imports
 from src.data.loader import load_course_sections
-from src.solver.scheduler import CourseScheduler
+from src.solver.scheduler import CourseScheduler, SAME_DAY_RELAX_FLAGS
 from src.models.models import (
     DayOfWeek,
     SessionType,
@@ -151,15 +152,23 @@ def initialize_session_state() -> None:
         # Structure: {section_key: [(session_type, reason), ...]}
         st.session_state.unassigned_blocks = {}
     
+    default_relaxation_flags = {
+        'relax_availability': False,
+        'relax_3juntas_medium': False,
+        'relax_3juntas_full': False,
+        'relax_block4': False,
+        'relax_ayudantia_partial': False,
+        'relax_ayudantia_full': False,
+        'relax_same_day_clase_ayud': False,
+        'relax_same_day_clase_lab': False,
+        'relax_same_day_ayud_lab': False,
+    }
     if "relaxation_flags" not in st.session_state:
-        st.session_state.relaxation_flags = {
-            'relax_availability': False,
-            'relax_3juntas_medium': False,
-            'relax_3juntas_full': False,
-            'relax_block4': False,
-            'relax_ayudantia_partial': False,
-            'relax_ayudantia_full': False,
-        }
+        st.session_state.relaxation_flags = dict(default_relaxation_flags)
+    else:
+        # Merge in flags added after the session started (running app upgrade)
+        for flag, default in default_relaxation_flags.items():
+            st.session_state.relaxation_flags.setdefault(flag, default)
 
 
 # ============================================================================
@@ -611,11 +620,11 @@ def validate_schedule() -> Dict:
     section_lookup = get_section_lookup()
     professor_bookings: Dict[Tuple[int, int, str], List[Tuple[str, str]]] = defaultdict(list)
     room_bookings: Dict[Tuple[int, int, str], List[Tuple[str, str]]] = defaultdict(list)
-    course_bookings: Dict[Tuple[int, int, str], List[Tuple[str, str]]] = defaultdict(list)
+    semester_bookings: Dict[Tuple[int, int, int], List[Tuple[str, str, str]]] = defaultdict(list)
     exact_bookings: Dict[Tuple[int, int, str, str], List[str]] = defaultdict(list)
     scheduled_counts: Dict[Tuple[str, str], int] = defaultdict(int)
-    scheduled_locations: Dict[Tuple[str, str], List[Tuple[int, int]]] = defaultdict(list)
-    lecture_blocks_by_day: Dict[Tuple[str, int], List[int]] = defaultdict(list)
+    section_day_types: Dict[Tuple[str, int], Set[str]] = defaultdict(set)
+    blocks_by_type_day: Dict[Tuple[str, str, int], List[int]] = defaultdict(list)
 
     def add_violation(violation_type: str, details: str, **fields: Any) -> None:
         report["valid"] = False
@@ -654,11 +663,9 @@ def validate_schedule() -> Dict:
             normalized_session_type = normalize_session_type(session_type)
             session_enum = session_type_to_enum(normalized_session_type)
             scheduled_counts[(section_key, normalized_session_type)] += 1
-            scheduled_locations[(section_key, normalized_session_type)].append((day_val, block_idx))
             exact_bookings[(day_val, block_idx, section_key, normalized_session_type)].append(room)
-
-            if normalized_session_type == SessionType.CLASE.value:
-                lecture_blocks_by_day[(section_key, day_val)].append(block_idx)
+            section_day_types[(section_key, day_val)].add(normalized_session_type)
+            blocks_by_type_day[(section_key, normalized_session_type, day_val)].append(block_idx)
 
             if session_enum is None:
                 add_violation(
@@ -699,8 +706,8 @@ def validate_schedule() -> Dict:
                     (section_key, normalized_session_type)
                 )
 
-            course_bookings[(day_val, block_idx, section.course_code)].append(
-                (section_key, normalized_session_type)
+            semester_bookings[(day_val, block_idx, section.plan_comun_level)].append(
+                (section.course_code, section_key, normalized_session_type)
             )
 
     for (day_val, block_idx, professor), sections in professor_bookings.items():
@@ -741,81 +748,135 @@ def validate_schedule() -> Dict:
                 session_type=session_type,
             )
 
-    for (day_val, block_idx, course_code), sections in course_bookings.items():
-        if len(sections) > 1:
+    for (day_val, block_idx, level), entries in semester_bookings.items():
+        distinct_courses = {course_code for course_code, _, _ in entries}
+        if len(distinct_courses) > 1:
             day_name = DayOfWeek(day_val).name
             add_violation(
-                "COURSE_OVERLAP",
-                f"{course_code} appears {len(sections)} times on {day_name} Block {block_idx}",
+                "SEMESTER_OVERLAP",
+                f"Plan Común {level} has {len(distinct_courses)} different courses sharing "
+                f"{day_name} Block {block_idx} (only sections of the same course may share a slot)",
                 day=day_name,
                 block=get_block_label(block_idx),
-                course_code=course_code,
-                sections=", ".join(f"{section_key} ({session_type})" for section_key, session_type in sections),
+                plan_comun=level,
+                courses=", ".join(sorted(distinct_courses)),
+                sections=", ".join(f"{sk} ({st})" for _, sk, st in entries),
             )
 
+    for (section_key, day_val), types in section_day_types.items():
+        if len(types) < 2:
+            continue
+        section = section_lookup.get(section_key)
+        day_name = DayOfWeek(day_val).name
+        for type_a, type_b in combinations(sorted(types), 2):
+            flag_key = SAME_DAY_RELAX_FLAGS.get(frozenset((type_a, type_b)))
+            if flag_key and st.session_state.relaxation_flags.get(flag_key, False):
+                continue  # this pair is explicitly allowed to share a day
+            add_violation(
+                "SAME_DAY_SESSION_TYPES",
+                f"{section.course_code if section else section_key} has {type_a} and {type_b} "
+                f"on the same day ({day_name}); session types must fall on different days",
+                day=day_name,
+                section=section_key,
+                session_types=f"{type_a}, {type_b}",
+            )
+
+    relax_block4 = st.session_state.relaxation_flags.get('relax_block4', False)
+
     for section in st.session_state.sections:
+        section_key = section.section_key
+        distribution = (section.class_distribution or "").strip().lower()
+
         for session_type, required_blocks in get_session_requirements(section).items():
-            scheduled_count = scheduled_counts[(section.section_key, session_type)]
+            scheduled_count = scheduled_counts[(section_key, session_type)]
 
             if scheduled_count > required_blocks:
                 add_violation(
                     "OVER_REQUIRED_BLOCKS",
                     f"{section.course_code} has {scheduled_count} {session_type} blocks scheduled but requires {required_blocks}",
-                    section=section.section_key,
+                    section=section_key,
                     session_type=session_type,
                     required=required_blocks,
                     scheduled=scheduled_count,
                 )
 
-            if required_blocks == 1 and not st.session_state.relaxation_flags.get('relax_block4', False):
-                for day_val, block_idx in scheduled_locations[(section.section_key, session_type)]:
-                    if block_idx != 4:
+            # Daily pattern: consecutive pair per day; odd counts allow one
+            # single-block day at Block 4. 3-juntas Clases instead carry one
+            # consecutive triple plus (required - 3) Block-4 singles.
+            is_3juntas_clase = (
+                session_type == SessionType.CLASE.value and distribution == "3-juntas"
+            )
+            single_budget = (
+                max(0, required_blocks - 3) if is_3juntas_clase else required_blocks % 2
+            )
+            single_days = 0
+            triple_days = 0
+
+            for day in DayOfWeek:
+                day_val = day.value
+                blocks = sorted(set(blocks_by_type_day.get((section_key, session_type, day_val), [])))
+                if not blocks:
+                    continue
+
+                if len(blocks) == 1:
+                    single_days += 1
+                    if blocks[0] != 4 and not relax_block4:
                         add_violation(
                             "INVALID_SINGLE_BLOCK",
-                            f"Single-block {session_type} sessions must use Block 4, not Block {block_idx}",
-                            section=section.section_key,
-                            day=DayOfWeek(day_val).name,
-                            block=get_block_label(block_idx),
+                            f"{section.course_code} has an isolated {session_type} block outside Block 4",
+                            section=section_key,
+                            day=day.name,
+                            block=get_block_label(blocks[0]),
                             session_type=session_type,
                         )
-
-        distribution = (section.class_distribution or "").strip().lower()
-
-        if distribution.startswith("2+1"):
-            for (section_key, day_val), blocks in lecture_blocks_by_day.items():
-                if section_key != section.section_key:
-                    continue
-                unique_blocks = sorted(set(blocks))
-                if len(unique_blocks) == 1 and unique_blocks[0] != 4:
+                elif is_3juntas_clase:
+                    if len(blocks) == 3 and blocks == list(range(blocks[0], blocks[0] + 3)):
+                        triple_days += 1
+                    else:
+                        add_violation(
+                            "INVALID_3_JUNTAS_SEQUENCE",
+                            f"{section.course_code} must place its 3-juntas lectures as 3 consecutive blocks on one day",
+                            section=section_key,
+                            day=day.name,
+                            blocks=", ".join(str(block) for block in blocks),
+                        )
+                elif len(blocks) > 2:
                     add_violation(
-                        "INVALID_2_PLUS_1_SINGLE",
-                        f"{section.course_code} has an isolated lecture outside Block 4",
-                        section=section.section_key,
-                        day=DayOfWeek(day_val).name,
-                        block=get_block_label(unique_blocks[0]),
+                        "INVALID_BLOCK_PAIR",
+                        f"{section.course_code} has {len(blocks)} {session_type} blocks on {day.name}; at most one pair of 2 per day",
+                        section=section_key,
+                        day=day.name,
+                        blocks=", ".join(str(block) for block in blocks),
+                        session_type=session_type,
+                    )
+                elif blocks[1] != blocks[0] + 1:
+                    add_violation(
+                        "NON_CONSECUTIVE_PAIR",
+                        f"{section.course_code} has two {session_type} blocks on {day.name} that are not consecutive",
+                        section=section_key,
+                        day=day.name,
+                        blocks=", ".join(str(block) for block in blocks),
+                        session_type=session_type,
                     )
 
-        if distribution == "3-juntas":
-            for (section_key, day_val), blocks in lecture_blocks_by_day.items():
-                if section_key != section.section_key:
-                    continue
-                unique_blocks = sorted(set(blocks))
-                if len(unique_blocks) not in {0, 3}:
-                    add_violation(
-                        "INVALID_3_JUNTAS_COUNT",
-                        f"{section.course_code} must place 3-juntas lectures in groups of exactly 3",
-                        section=section.section_key,
-                        day=DayOfWeek(day_val).name,
-                        blocks=", ".join(str(block) for block in unique_blocks),
-                    )
-                elif len(unique_blocks) == 3 and unique_blocks != list(range(unique_blocks[0], unique_blocks[0] + 3)):
-                    add_violation(
-                        "INVALID_3_JUNTAS_SEQUENCE",
-                        f"{section.course_code} has 3-juntas lectures that are not consecutive",
-                        section=section.section_key,
-                        day=DayOfWeek(day_val).name,
-                        blocks=", ".join(str(block) for block in unique_blocks),
-                    )
+            if single_days > single_budget:
+                add_violation(
+                    "TOO_MANY_SINGLE_DAYS",
+                    f"{section.course_code} has {single_days} isolated {session_type} blocks but only {single_budget} allowed "
+                    f"(sessions must be scheduled as consecutive pairs)",
+                    section=section_key,
+                    session_type=session_type,
+                    single_days=single_days,
+                    allowed=single_budget,
+                )
+
+            if is_3juntas_clase and triple_days > 1:
+                add_violation(
+                    "MULTIPLE_3_JUNTAS_DAYS",
+                    f"{section.course_code} has its 3-juntas triple on {triple_days} different days; only one is allowed",
+                    section=section_key,
+                    triple_days=triple_days,
+                )
 
     return report
 
@@ -1022,7 +1083,24 @@ def render_sidebar() -> None:
     )
     flags['relax_ayudantia_full'] = relax_ayudantia_full
     flags['relax_ayudantia_partial'] = relax_ayudantia_partial and not relax_ayudantia_full
-    
+
+    st.sidebar.markdown("**Tipos de sesión en el mismo día**")
+    flags['relax_same_day_clase_ayud'] = st.sidebar.checkbox(
+        "Permitir Clases y Ayudantías el mismo día",
+        value=flags['relax_same_day_clase_ayud'],
+        help="Una sección puede tener sus Clases y sus Ayudantías en el mismo día.",
+    )
+    flags['relax_same_day_clase_lab'] = st.sidebar.checkbox(
+        "Permitir Clases y Laboratorios el mismo día",
+        value=flags['relax_same_day_clase_lab'],
+        help="Una sección puede tener sus Clases y sus Laboratorios en el mismo día.",
+    )
+    flags['relax_same_day_ayud_lab'] = st.sidebar.checkbox(
+        "Permitir Ayudantías y Laboratorios el mismo día",
+        value=flags['relax_same_day_ayud_lab'],
+        help="Una sección puede tener sus Ayudantías y sus Laboratorios en el mismo día.",
+    )
+
     if st.sidebar.button("Regenerate Automated Schedule", key="regen_btn"):
         if st.session_state.sections:
             with st.spinner("Re-optimizing schedule with selected relaxations..."):
