@@ -18,7 +18,9 @@ Built by **Grupo 14** for the IAA course project.
 - **Constraint relaxation** — toggle individual rules from the sidebar and re-optimise.
 - **Saving and Loading Progress** — Save unfinished progress to a local json file and load
   it to continue working.
-- **Excel export** — one workbook with a sheet per level plus a master sheet.
+- **Excel export** — one workbook with a sheet per level plus a master sheet, colored
+  with the same semester scheme as the Master View (mixed slots color each course
+  individually) and a legend.
 
 ## Requirements
 

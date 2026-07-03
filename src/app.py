@@ -21,6 +21,9 @@ import html as html_utils
 from datetime import datetime
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
+from openpyxl.cell.rich_text import CellRichText, TextBlock
+from openpyxl.cell.text import InlineFont
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
 # Local imports
 from src.data.loader import load_course_sections
@@ -1275,67 +1278,153 @@ def render_validation_section() -> None:
             st.metric("Slots Used", validation_report["stats"]["total_slots_used"])
 
 
+# Semester colors for the Excel export, mirroring the Master View grid.
+# openpyxl wants RGB hex without '#'. 'fill' is the light cell background;
+# 'strong' is used for fonts (PC1 uses a darkened yellow so text stays legible).
+PC_EXPORT_COLORS: Dict[int, Dict[str, str]] = {
+    1: {"strong": "CA8A04", "fill": "FEF9C3"},   # amarillo
+    2: {"strong": "16A34A", "fill": "DCFCE7"},   # verde
+    3: {"strong": "DC2626", "fill": "FEE2E2"},   # rojo
+    4: {"strong": "2563EB", "fill": "DBEAFE"},   # azul
+}
+
+
+def _style_export_sheet(worksheet, cell_levels: Dict[Tuple[int, int], List[int]]) -> None:
+    """
+    Apply the Master View color scheme to an exported schedule sheet.
+
+    cell_levels maps (excel_row, excel_col) of each non-empty course cell to
+    the Plan Común levels of its entries, in the order they were written.
+    Single-level cells get the level's light fill; mixed cells (master sheet)
+    keep a white background but color each course entry with its level color.
+    """
+    thin = Side(style="thin", color="D5DAE1")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    wrap = Alignment(wrap_text=True, vertical="top")
+
+    # Header row styled like the grid header
+    for cell in worksheet[1]:
+        cell.fill = PatternFill("solid", fgColor="243447")
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = border
+
+    worksheet.column_dimensions["A"].width = 18
+    for col in ("B", "C", "D", "E", "F"):
+        worksheet.column_dimensions[col].width = 34
+
+    for row in worksheet.iter_rows(min_row=2, max_row=14, max_col=6):
+        for cell in row:
+            cell.border = border
+            cell.alignment = wrap
+
+            levels = cell_levels.get((cell.row, cell.column))
+            if not levels:
+                continue
+
+            if len(set(levels)) == 1:
+                cell.fill = PatternFill("solid", fgColor=PC_EXPORT_COLORS[levels[0]]["fill"])
+            else:
+                # Mixed semesters in one slot: one color per course entry
+                entries = str(cell.value).split(" | ")
+                rich = CellRichText()
+                for index, (entry, level) in enumerate(zip(entries, levels)):
+                    if index:
+                        rich.append("  |  ")
+                    rich.append(TextBlock(
+                        InlineFont(b=True, color=PC_EXPORT_COLORS[level]["strong"]),
+                        entry,
+                    ))
+                cell.value = rich
+
+
+def _add_export_legend(worksheet, start_row: int) -> None:
+    """Write a small color legend under the master sheet."""
+    worksheet.cell(row=start_row, column=1, value="Leyenda:").font = Font(bold=True)
+    for level in range(1, 5):
+        cell = worksheet.cell(row=start_row, column=1 + level, value=f"Plan Común {level}")
+        cell.fill = PatternFill("solid", fgColor=PC_EXPORT_COLORS[level]["fill"])
+        cell.font = Font(bold=True, color=PC_EXPORT_COLORS[level]["strong"])
+        cell.alignment = Alignment(horizontal="center")
+
+
+def build_export_workbook() -> BytesIO:
+    """Build the production Excel workbook (one sheet per level + master),
+    colored with the same semester scheme as the Master View grid."""
+    output = BytesIO()
+    section_lookup = get_section_lookup()
+
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        days = ["LUNES", "MARTES", "MIERCOLES", "JUEVES", "VIERNES"]
+
+        # One sheet per cohort level
+        for plan_comun in range(1, 5):
+            display_data = []
+            cell_levels: Dict[Tuple[int, int], List[int]] = {}
+            for block_idx in range(13):
+                block = ACADEMIC_BLOCKS[block_idx]
+                row = {"Block": f"{block_idx} ({block.start_time}-{block.end_time})"}
+
+                for day_idx, day in enumerate(days):
+                    courses = []
+                    for section_key, session_type, room in st.session_state.schedule_matrix.get((day_idx, block_idx), []):
+                        section = section_lookup.get(section_key)
+                        if section and section.plan_comun_level == plan_comun:
+                            courses.append(f"{section.course_code} ({session_type[:3]})")
+
+                    row[day] = " | ".join(courses) if courses else ""
+                    if courses:
+                        # +2: one for the header row, one for 1-based indexing
+                        cell_levels[(block_idx + 2, day_idx + 2)] = [plan_comun] * len(courses)
+
+                display_data.append(row)
+
+            sheet_name = f"Plan Común {plan_comun}"
+            pd.DataFrame(display_data).to_excel(writer, sheet_name=sheet_name, index=False)
+            _style_export_sheet(writer.sheets[sheet_name], cell_levels)
+
+        # Master view: all levels, colored per entry
+        display_data = []
+        master_levels: Dict[Tuple[int, int], List[int]] = {}
+        for block_idx in range(13):
+            block = ACADEMIC_BLOCKS[block_idx]
+            row = {"Block": f"{block_idx} ({block.start_time}-{block.end_time})"}
+
+            for day_idx, day in enumerate(days):
+                courses = []
+                levels = []
+                for section_key, session_type, room in st.session_state.schedule_matrix.get((day_idx, block_idx), []):
+                    section = section_lookup.get(section_key)
+                    if section:
+                        courses.append(f"{section.course_code} (PC{section.plan_comun_level})")
+                        levels.append(section.plan_comun_level)
+
+                row[day] = " | ".join(courses) if courses else ""
+                if courses:
+                    master_levels[(block_idx + 2, day_idx + 2)] = levels
+
+            display_data.append(row)
+
+        pd.DataFrame(display_data).to_excel(writer, sheet_name="Master View", index=False)
+        master_sheet = writer.sheets["Master View"]
+        _style_export_sheet(master_sheet, master_levels)
+        _add_export_legend(master_sheet, start_row=16)
+
+    output.seek(0)
+    return output
+
+
 def render_export_section() -> None:
     """Render Excel export section."""
     st.subheader("Export Schedule")
-    
+
     if st.button("Download Production Schedule", key="export_btn", use_container_width=True):
         if not st.session_state.sections:
             st.warning("No data to export")
             return
-        
+
         with st.spinner("Generating Excel workbook..."):
-            output = BytesIO()
-            
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                days = ["LUNES", "MARTES", "MIERCOLES", "JUEVES", "VIERNES"]
-                
-                # Export each cohort level + master view
-                for plan_comun in range(1, 5):
-                    display_data = []
-                    for block_idx in range(13):
-                        block = ACADEMIC_BLOCKS[block_idx]
-                        row = {"Block": f"{block_idx} ({block.start_time}-{block.end_time})"}
-                        
-                        for day_idx, day in enumerate(days):
-                            key = (day_idx, block_idx)
-                            courses = []
-                            if key in st.session_state.schedule_matrix:
-                                for section_key, session_type, room in st.session_state.schedule_matrix[key]:
-                                    section = next((s for s in st.session_state.sections if s.section_key == section_key), None)
-                                    if section and section.plan_comun_level == plan_comun:
-                                        courses.append(f"{section.course_code} ({session_type[:3]})")
-                            
-                            row[day] = " | ".join(courses) if courses else ""
-                        
-                        display_data.append(row)
-                    
-                    df = pd.DataFrame(display_data)
-                    df.to_excel(writer, sheet_name=f"Plan Común {plan_comun}", index=False)
-                
-                # Master view
-                display_data = []
-                for block_idx in range(13):
-                    block = ACADEMIC_BLOCKS[block_idx]
-                    row = {"Block": f"{block_idx} ({block.start_time}-{block.end_time})"}
-                    
-                    for day_idx, day in enumerate(days):
-                        key = (day_idx, block_idx)
-                        courses = []
-                        if key in st.session_state.schedule_matrix:
-                            for section_key, session_type, room in st.session_state.schedule_matrix[key]:
-                                section = next((s for s in st.session_state.sections if s.section_key == section_key), None)
-                                if section:
-                                    courses.append(f"{section.course_code} (PC{section.plan_comun_level})")
-                        
-                        row[day] = " | ".join(courses) if courses else ""
-                    
-                    display_data.append(row)
-                
-                df_master = pd.DataFrame(display_data)
-                df_master.to_excel(writer, sheet_name="Master View", index=False)
-            
-            output.seek(0)
+            output = build_export_workbook()
             st.download_button(
                 label="Download Excel File",
                 data=output,

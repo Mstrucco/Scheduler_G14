@@ -29,16 +29,16 @@ body { font-family: Arial, Helvetica, sans-serif; font-size: 12px; color: #1f293
 .course-card.laboratorio { border-left-color: #2f6b43; }
 /* Master view: color the card by semester (Plan Común). Defined after the
    session rules so it wins the border-left-color tie when both are present. */
-.course-card.pc-1 { border-left-color: #2563eb; background: #eff5ff; }
+.course-card.pc-1 { border-left-color: #eab308; background: #fefce8; }
 .course-card.pc-2 { border-left-color: #16a34a; background: #edfaf1; }
-.course-card.pc-3 { border-left-color: #d97706; background: #fff7ed; }
-.course-card.pc-4 { border-left-color: #7c3aed; background: #f6f1fe; }
+.course-card.pc-3 { border-left-color: #dc2626; background: #fef2f2; }
+.course-card.pc-4 { border-left-color: #2563eb; background: #eff5ff; }
 .pill-group { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
 .pc-badge { border-radius: 6px; font-size: 10px; font-weight: 700; padding: 2px 5px; color: #fff; }
-.pc-badge.pc-1 { background: #2563eb; }
+.pc-badge.pc-1 { background: #eab308; color: #1f2937; }
 .pc-badge.pc-2 { background: #16a34a; }
-.pc-badge.pc-3 { background: #d97706; }
-.pc-badge.pc-4 { background: #7c3aed; }
+.pc-badge.pc-3 { background: #dc2626; }
+.pc-badge.pc-4 { background: #2563eb; }
 .master-legend { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin-bottom: 12px; padding: 8px 12px; background: #fff; border: 1px solid #d5dae1; border-radius: 8px; }
 .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: #243447; }
 .legend-swatch { width: 14px; height: 14px; border-radius: 4px; display: inline-block; }
@@ -260,7 +260,7 @@ function buildGrid() {
   var bankTitle = master ? "Bloques sin asignar (todos los niveles)" : "Unassigned Blocks";
   var legendHtml = "";
   if (master) {
-    var pcColors = { "1":"#2563eb", "2":"#16a34a", "3":"#d97706", "4":"#7c3aed" };
+    var pcColors = { "1":"#eab308", "2":"#16a34a", "3":"#dc2626", "4":"#2563eb" };
     var li = "";
     for (var L = 1; L <= 4; L++) {
       li += '<span class="legend-item"><span class="legend-swatch" style="background:' + pcColors[String(L)] + '"></span>Plan Común ' + L + '</span>';
